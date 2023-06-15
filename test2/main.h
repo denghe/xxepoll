@@ -1,7 +1,8 @@
 ﻿#pragma once
-#ifndef XX2D_TESTS2_MAIN_H_
-#define XX2D_TESTS2_MAIN_H_
+#ifndef XXEPOLL_TEST2_MAIN_H_
+#define XXEPOLL_TEST2_MAIN_H_
 
+#pragma once
 #include "xx_coro_simple.h"
 #include "xx_ptr.h"
 #include "xx_data_queue.h"

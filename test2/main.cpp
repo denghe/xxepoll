@@ -1,5 +1,6 @@
 ﻿#include "main.h"
 
+
 namespace xx {
     template<>
     struct StringFuncs<sockaddr const *, void> {
@@ -37,11 +38,13 @@ struct Socket {
         return 0;
     }
     */
-    void AssertEpFd(Epoll* ep_, int fd_);
+    void AssertEpFd(Epoll* ep_, int fd_) const;
     [[nodiscard]] inline bool Alive() const { return fd != -1; }
-    void Close();   // unsafe
+    virtual void Close();   // unsafe
     virtual void HandleEvent(uint32_t e) = 0;
-    virtual ~Socket() { Close(); };
+    virtual ~Socket() {
+        Socket::Close();
+    };
 };
 
 template<typename Peer>
@@ -50,22 +53,31 @@ struct [[maybe_unused]] TcpListenerBase : Socket {
     void HandleEvent(uint32_t e) override;
 };
 
+// member func exists checkers
+template<typename T> concept TcpPeerBase_Accept = requires(T t) { t.Accept(); };
+
 template<typename Derived>
 struct TcpPeerBase : Socket {
     sockaddr_in6 addr{};
     bool sending = false;
     xx::DataQueue sendQueue;
     xx::Data recv;
-    /* derived interface:
-    int Init(Epoll* ep_, int fd_, sockaddr_in6 const& addr_) {   // return 0: success
+    void Init(Epoll* ep_, int fd_, sockaddr_in6 const& addr_) {
         AssertEpFd(ep_, fd_);
         ep = ep_;
         fd = fd_;
         addr = addr_;
+    }
+    /* derived interface:
+    int Accept() {   // return 0: success
         ...
         return 0;
     }
-    int Receive();   // return 0: success or can safety visit member
+    int Receive() {   // return 0: success or can safety visit member
+        ...
+        recv.Clear();
+        return 0;
+    }
     */
     [[maybe_unused]] inline int Send(xx::Data &&data) {
         sendQueue.Push(std::move(data));
@@ -158,7 +170,7 @@ struct Epoll {
     }
 };
 
-void Socket::AssertEpFd(Epoll* ep_, int fd_) {
+void Socket::AssertEpFd(Epoll* ep_, int fd_) const {
     xx_assert(ep == nullptr);
     xx_assert(fd == -1);
     xx_assert(ep_);
@@ -167,7 +179,6 @@ void Socket::AssertEpFd(Epoll* ep_, int fd_) {
 }
 
 inline void Socket::Close() {
-    xx_assert(fd != -1 && ep);
     if (fd == -1) return;
     xx_assert(fd < (int)ep->sockets.size());
     xx_assert(ep->sockets[fd]);
@@ -203,7 +214,10 @@ void TcpListenerBase<Peer>::HandleEvent(uint32_t e) {
         if (-1 == fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK)) return -2;
         if (-1 == ep->Ctl(s, EPOLLIN)) return -3;
         auto p = xx::Make<Peer>();
-        if (p->Init(ep, s, addr)) return -4;
+        p->Init(ep, s, addr);
+        if constexpr( TcpPeerBase_Accept<Peer> ) {
+            if (p->Accept()) return -4;
+        }
         ep->sockets[s] = std::move(p);
         sg.Cancel();
         return 0;
@@ -234,7 +248,7 @@ inline int TcpPeerBase<Derived>::Send() {
     else {
         sendQueue.Pop(sentLen); // partial sent, need wait
     }
-LabEnd:
+    LabEnd:
     sending = true;
     return ep->Ctl(fd, EPOLLIN | EPOLLOUT, EPOLL_CTL_MOD); // wait & watch writable state
 }
@@ -269,23 +283,22 @@ inline void TcpPeerBase<Derived>::HandleEvent(uint32_t e) {
     }
 }
 
-/************************************************************************************************************************/
-/************************************************************************************************************************/
+
 
 struct EchoPeer : TcpPeerBase<EchoPeer> {
-    int Init(Epoll* ep_, int fd_, sockaddr_in6 const& addr_) {
-        AssertEpFd(ep_, fd_);
-        ep = ep_;
-        fd = fd_;
-        addr = addr_;
-        // ...
-        xx::CoutN("peer init. ip = ", addr);
+    int Accept() {
+        xx::CoutN("peer accepted. ip = ", addr);
         return 0;
     }
     int Receive() {
         Send(xx::Data(recv));
         recv.Clear();
         return 0;
+    }
+    void Close() override {
+        if (fd == -1) return;
+        this->Socket::Close();
+        xx::CoutN("peer closed. ip = ", addr);
     }
 };
 
@@ -294,7 +307,9 @@ struct Listener : TcpListenerBase<EchoPeer> {};
 int main() {
     Epoll ep;
     Listener listener;
+    xx::CoutN("create listener");
     if (int r = listener.Init(&ep, ep.MakeSocket(12345))) return r;
+    xx::CoutN("running...");
     while(ep.running) {
         if (int r = ep.Wait(1)) return r;
     }
