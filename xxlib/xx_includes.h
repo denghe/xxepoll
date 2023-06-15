@@ -51,6 +51,10 @@ static_assert(false, "No co_await support");
 #include <ctime>
 #include <cstdint>
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
+#include <cerrno>
+
 
 #ifdef _WIN32
 #ifndef NOMINMAX
