@@ -341,6 +341,7 @@ struct EchoPeer : TcpSocket<EchoPeer> {
 
     xx::Coro Update = Update_();
     xx::Coro Update_() {
+        auto sg = xx::MakeSimpleScopeGuard([]{xx::CoutN("coro has been killed !!!");});
         Send(xx::Data::From("hello !"));
         while(true) {
             CoSleep(1s);
