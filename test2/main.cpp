@@ -1,6 +1,5 @@
 ﻿#include "main.h"
 
-
 namespace xx {
     template<>
     struct StringFuncs<sockaddr const *, void> {
@@ -25,66 +24,49 @@ namespace xx {
     };
 }
 
+[[nodiscard]] inline int MakeSocketFD(int port, int sockType = SOCK_STREAM, char const* hostName = nullptr) {
+    int fd{-1};
+    addrinfo hints;
+    bzero(&hints, sizeof(addrinfo));
+    hints.ai_family = AF_UNSPEC;  // ipv4 / 6
+    hints.ai_socktype = sockType; // SOCK_STREAM / SOCK_DGRAM
+    hints.ai_flags = AI_PASSIVE;  // all interfaces
+    addrinfo *ai_{}, *ai;
+    if (getaddrinfo(hostName, std::to_string(port).c_str(), &hints, &ai_)) return -1; // format error?
+    for (ai = ai_; ai != nullptr; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype | SOCK_NONBLOCK, ai->ai_protocol);
+        if (fd == -1) continue;
+        int enable = 1;
+        if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
+            close(fd);
+            continue;
+        }
+        if (!bind(fd, ai->ai_addr, ai->ai_addrlen)) break; // success
+        close(fd);
+    }
+    freeaddrinfo(ai_);
+    if (!ai) return -2; // address not found?
+    return fd;
+}
+
 struct Epoll;
 struct Socket {
+
     Epoll* ep{};
     int fd{-1};
-    /* derived interface:
-    int Init(Epoll* ep_, int fd_) {
-        AssertEpFd(ep_, fd_);
-        ep = ep_;
-        fd = fd_;
-        ...
-        return 0;
-    }
-    */
-    void AssertEpFd(Epoll* ep_, int fd_) const;
-    [[nodiscard]] inline bool Alive() const { return fd != -1; }
-    virtual void Close();   // unsafe
-    virtual void HandleEvent(uint32_t e) = 0;
-    virtual ~Socket() {
-        Socket::Close();
+    uint32_t events{};
+    xx::Coro OnEvents;  // need assign
+
+    Socket() = delete;
+    Socket(Socket const&) = delete;
+    Socket& operator=(Socket const&) = delete;
+
+    Socket(Epoll* ep_, int fd_);    // ep = ep_, fd = fd_
+    ~Socket() {
+        xx_assert(fd == -1);
     };
-};
 
-template<typename Peer>
-struct [[maybe_unused]] TcpListenerBase : Socket {
-    int Init(Epoll* ep_, int fd_);
-    void HandleEvent(uint32_t e) override;
-};
-
-// member func exists checkers
-template<typename T> concept TcpPeerBase_Accept = requires(T t) { t.Accept(); };
-
-template<typename Derived>
-struct TcpPeerBase : Socket {
-    sockaddr_in6 addr{};
-    bool sending = false;
-    xx::DataQueue sendQueue;
-    xx::Data recv;
-    void Init(Epoll* ep_, int fd_, sockaddr_in6 const& addr_) {
-        AssertEpFd(ep_, fd_);
-        ep = ep_;
-        fd = fd_;
-        addr = addr_;
-    }
-    /* derived interface:
-    int Accept() {   // return 0: success
-        ...
-        return 0;
-    }
-    int Receive() {   // return 0: success or can safety visit member
-        ...
-        recv.Clear();
-        return 0;
-    }
-    */
-    [[maybe_unused]] inline int Send(xx::Data &&data) {
-        sendQueue.Push(std::move(data));
-        return !sending ? Send() : 0;
-    }
-    int Send();
-    void HandleEvent(uint32_t e) override;
+    void CloseFD();   // close(fd), fd=-1
 };
 
 struct Epoll {
@@ -110,32 +92,14 @@ struct Epoll {
         }
     }
 
-    [[nodiscard]] inline int MakeSocket(int port, int sockType = SOCK_STREAM, char const* hostName = nullptr) {
-        int fd{-1};
+    template<typename T>
+    inline void Add(T&& s) {
+        sockets[s->fd] = std::forward<T>(s);
+    }
 
-        bzero(&hints, sizeof(addrinfo));
-        hints.ai_family = AF_UNSPEC;  // ipv4 / 6
-        hints.ai_socktype = sockType; // SOCK_STREAM / SOCK_DGRAM
-        hints.ai_flags = AI_PASSIVE;  // all interfaces
-        addrinfo *ai_{}, *ai;
-        if (getaddrinfo(hostName, std::to_string(port).c_str(), &hints, &ai_)) return -1; // format error?
-        for (ai = ai_; ai != nullptr; ai = ai->ai_next) {
-            fd = socket(ai->ai_family, ai->ai_socktype | SOCK_NONBLOCK, ai->ai_protocol);
-            if (fd == -1) continue;
-            int enable = 1;
-            if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-                close(fd);
-                continue;
-            }
-            if (!bind(fd, ai->ai_addr, ai->ai_addrlen)) break; // success
-            close(fd);
-        }
-        freeaddrinfo(ai_);
-        if (!ai) return -2; // address not found?
-
-        xx_assert(fd < sockets.size());
-        xx_assert(!sockets[fd]);
-        return fd;
+    template<typename T>
+    inline void Remove(T& s) {
+        sockets[s->fd].Reset();
     }
 
     [[nodiscard]] inline int Ctl(int fd, uint32_t flags, int op = EPOLL_CTL_ADD) {
@@ -145,170 +109,226 @@ struct Epoll {
         return epoll_ctl(efd, op, fd, &event);
     };
 
-    [[nodiscard]] inline int CtlClose(int fd) const {
-        if (fd == -1) return -1;
+    inline void CtlDel(int fd) {
         epoll_ctl(efd, EPOLL_CTL_DEL, fd, nullptr);
-        return close(fd);
-    }
+    };
 
     [[nodiscard]] inline int Wait(int timeoutMS) {
         int n = epoll_wait(efd, events.data(), (int) events.size(), timeoutMS);
         if (n == -1) return errno;
         for (int i = 0; i < n; ++i) {
             auto fd = events[i].data.fd;
-            auto&& h = sockets[fd];
-            xx_assert(h->fd == fd);
-            if (!h) {
-                // log?
-                (void)CtlClose(fd);
+            if (fd >= sockets.size() || !sockets[fd]) {
+                CtlDel(fd);
+                close(fd);
                 continue;
             }
-            auto e = events[i].events;
-            h->HandleEvent(e);
+            auto&& s = *sockets[fd];
+            assert(s.fd == fd);
+
+            s.events = events[i].events;
+            // todo: if (s.OnEvents) remove s from ???  delay close ???
+            s.OnEvents();
         }
         return 0;
     }
 };
 
-void Socket::AssertEpFd(Epoll* ep_, int fd_) const {
+Socket::Socket(Epoll* ep_, int fd_) {
     xx_assert(ep == nullptr);
     xx_assert(fd == -1);
     xx_assert(ep_);
     xx_assert(fd_);
+    xx_assert(fd_ < ep_->sockets.size());
     xx_assert(!ep_->sockets[fd_]);
+    ep = ep_;
+    fd = fd_;
 }
 
-inline void Socket::Close() {
+inline void Socket::CloseFD() {
     if (fd == -1) return;
+    xx_assert(ep);
     xx_assert(fd < (int)ep->sockets.size());
     xx_assert(ep->sockets[fd]);
     xx_assert(ep->sockets[fd].pointer == this);
-    auto s = fd;
+    close(fd);
     fd = -1;
-    (void)ep->CtlClose(s);
-    ep->sockets[s].Reset(); // unsafe
 }
 
-template<typename Peer>
-int TcpListenerBase<Peer>::Init(Epoll* ep_, int fd_) {
-    AssertEpFd(ep_, fd_);
-    ep = ep_;
-    fd = fd_;
-    if (-1 == listen(fd, SOMAXCONN)) return -1;
-    if (-1 == ep->Ctl(fd, EPOLLIN)) return -2;
-    ep->sockets[fd] = xx::SharedFromThis(this);
-    return 0;
-}
+/*******************************************************************************************************/
+/*******************************************************************************************************/
+
+// member func exists checkers
+template<typename T> concept TcpPeerBase_OnAccept = requires(T t) { t.OnAccept(); };
+template<typename T> concept TcpPeerBase_OnReceive = requires(T t) { t.OnReceive(); };
+template<typename T> concept TcpPeerBase_OnClose = requires(T t) { t.OnClose(); };
+
 
 template<typename Peer>
-void TcpListenerBase<Peer>::HandleEvent(uint32_t e) {
-    xx_assert(!(e & EPOLLERR || e & EPOLLHUP));
-    auto f = [&]{
+struct [[maybe_unused]] TcpListener : Socket {
+    using Socket::Socket;
+
+    int Listen() {
+        if (auto r = listen(fd, SOMAXCONN); r == -1) return -1;
+        if (auto r = ep->Ctl(fd, EPOLLIN); r == -1) return -2;
+        OnEvents = OnEvents_();
+        ep->Add( xx::SharedFromThis(this) );
+        return 0;
+    }
+    ~TcpListener() {
+        CloseFD();
+    }
+    xx::Coro OnEvents_() {
+        while(true) {
+            CoYield;
+            if(events & EPOLLERR || events & EPOLLHUP) break;
+            while (HandleEvent() == 0);
+        }
+        CloseFD();
+    }
+    int HandleEvent() {
         sockaddr_in6 addr{};
         socklen_t len = sizeof(addr);
         int s = accept(fd, (sockaddr *) &addr, &len);
-        if (s < 0) return -1;
+        if (s < 0) return -1;   // system error?
         xx_assert(s < (int) ep->sockets.size());
         xx_assert(!ep->sockets[s]);
         auto sg = xx::MakeScopeGuard([&] { close(s); });
-        if (-1 == fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK)) return -2;
-        if (-1 == ep->Ctl(s, EPOLLIN)) return -3;
-        auto p = xx::Make<Peer>();
-        p->Init(ep, s, addr);
-        if constexpr( TcpPeerBase_Accept<Peer> ) {
-            if (p->Accept()) return -4;
+        if (-1 == fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK)) return -2;  // system error?
+        if (-1 == ep->Ctl(s, EPOLLIN)) return -3;   // system error?
+        auto p = xx::Make<Peer>(ep, s, addr);
+        if constexpr (TcpPeerBase_OnAccept<Peer>) {
+            if (p->OnAccept()) return 0;
         }
         ep->sockets[s] = std::move(p);
         sg.Cancel();
         return 0;
-    };
-    while (f() == 0);
-}
+    }
+};
+
+/*******************************************************************************************************/
+/*******************************************************************************************************/
 
 template<typename Derived>
-inline int TcpPeerBase<Derived>::Send() {
-    if (!sendQueue.bytes) return ep->Ctl(fd, EPOLLIN, EPOLL_CTL_MOD);
-    auto bufLen = ep->buf.size();   // max len
-    int vsLen = 0;  // num blocks
-    auto &&offset = sendQueue.Fill(ep->iovecs, vsLen, bufLen);
-    ssize_t sentLen;
-    do {
-        sentLen = writev(fd, ep->iovecs.data(), vsLen);
-    } while (sentLen == -1 && errno == EINTR);
-    //memset(ep->iovecs.data(), 0, vsLen * sizeof(iovec)); // for valgrind
-    if (sentLen == 0) return -1; // disconnected?
-    else if (sentLen == -1) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS) goto LabEnd; // can't send, need wait
-        else return -2; // error?
-    }
-    else if ((size_t) sentLen == bufLen) {
-        sendQueue.Pop(vsLen, offset, bufLen);
-        return 0; // all sent
-    }
-    else {
-        sendQueue.Pop(sentLen); // partial sent, need wait
-    }
-    LabEnd:
-    sending = true;
-    return ep->Ctl(fd, EPOLLIN | EPOLLOUT, EPOLL_CTL_MOD); // wait & watch writable state
-}
+struct TcpPeerBase : Socket {
+    using Socket::Socket;
 
-template<typename Derived>
-inline void TcpPeerBase<Derived>::HandleEvent(uint32_t e) {
-    xx_assert(!(e & EPOLLERR || e & EPOLLHUP));
-    if (e & EPOLLIN) {
-        if (!recv.cap) {
-            recv.Reserve(ep->buf.size());
-        }
-        if (recv.len == recv.cap) {
-            Close();    // log?  // too many data not handled
-            return;
-        }
-        if (auto len = read(fd, recv.buf + recv.len, recv.cap - recv.len); len <= 0) {
-            Close();    // log? read failed
-            return;
-        } else {
-            recv.len += len;
-        }
-        if (((Derived*)this)->Receive()) return;
-        if (!Alive()) return;
-    }
-    if (e & EPOLLOUT) {
-        sending = false;
-        if (Send()) {
-            // log?
-            Close();
-            return;
-        }
-    }
-}
+    sockaddr_in6 addr{};
+    bool sending{};
+    xx::DataQueue sendQueue;
+    xx::Data recv;
 
+    /* derived interface:
+    int OnAccept() {   // return !0: do not add to ep->socket & kill
+        ...
+        return 0;
+    }
+    void OnReceive() {
+        ...
+        recv.Clear();
+    }
+    void OnClose() {
+        ...
+    }
+    */
 
+    TcpPeerBase(Epoll* ep_, int fd_, sockaddr_in6 const& addr_)
+        : Socket(ep_, fd_)
+        , addr(addr_) {
+        OnEvents = OnEvents_();
+    }
+
+    [[maybe_unused]] inline int Send(xx::Data &&data) {
+        sendQueue.Push(std::move(data));
+        return !sending ? Send() : 0;
+    }
+
+    int Send() {
+        if (!sendQueue.bytes) return ep->Ctl(fd, EPOLLIN, EPOLL_CTL_MOD);
+        auto bufLen = ep->buf.size();   // max len
+        int vsLen = 0;  // num blocks
+        auto &&offset = sendQueue.Fill(ep->iovecs, vsLen, bufLen);
+        ssize_t sentLen;
+        do {
+            sentLen = writev(fd, ep->iovecs.data(), vsLen);
+        } while (sentLen == -1 && errno == EINTR);
+        //memset(ep->iovecs.data(), 0, vsLen * sizeof(iovec)); // for valgrind
+        if (sentLen == 0) return -1; // disconnected?
+        else if (sentLen == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ENOBUFS) goto LabEnd; // can't send, need wait
+            else return -2; // error?
+        }
+        else if ((size_t) sentLen == bufLen) {
+            sendQueue.Pop(vsLen, offset, bufLen);
+            return 0; // all sent
+        }
+        else {
+            sendQueue.Pop(sentLen); // partial sent, need wait
+        }
+        LabEnd:
+        sending = true;
+        return ep->Ctl(fd, EPOLLIN | EPOLLOUT, EPOLL_CTL_MOD); // wait & watch writable state
+    }
+
+    xx::Coro OnEvents_() {
+        while(true) {
+            CoYield;
+            if (events & EPOLLERR || events & EPOLLHUP) break;  // log?
+            if (events & EPOLLIN) {
+                if (!recv.cap) {
+                    recv.Reserve(ep->buf.size());
+                }
+                if (recv.len == recv.cap) break;    // log?  // too many data not handled
+                if (auto len = read(fd, recv.buf + recv.len, recv.cap - recv.len); len <= 0) break; // log? read failed
+                else {
+                    recv.len += len;
+                }
+                if constexpr (TcpPeerBase_OnReceive<Derived>) {
+                    ((Derived *) this)->OnReceive();
+                    if (fd == -1) break;
+                } else {
+                    Send(xx::Data(recv));   // default: echo logic
+                    recv.Clear();
+                }
+            }
+            if (events & EPOLLOUT) {
+                sending = false;
+                if (Send()) break;  // log?
+            }
+        }
+        CloseFD();
+        if constexpr (TcpPeerBase_OnClose<Derived>) {
+            ((Derived *) this)->OnClose();
+        }
+    }
+};
+
+/*******************************************************************************************************/
+/*******************************************************************************************************/
 
 struct EchoPeer : TcpPeerBase<EchoPeer> {
-    int Accept() {
+    using Base = TcpPeerBase<EchoPeer>;
+    using Base::Base;
+    int OnAccept() {
         xx::CoutN("peer accepted. ip = ", addr);
         return 0;
     }
-    int Receive() {
+    void OnReceive() {
         Send(xx::Data(recv));
         recv.Clear();
-        return 0;
     }
-    void Close() override {
-        if (fd == -1) return;
-        this->Socket::Close();
+    void OnClose() {
         xx::CoutN("peer closed. ip = ", addr);
     }
 };
 
-struct Listener : TcpListenerBase<EchoPeer> {};
-
 int main() {
+    xx::CoutN("begin");
     Epoll ep;
-    Listener listener;
-    xx::CoutN("create listener");
-    if (int r = listener.Init(&ep, ep.MakeSocket(12345))) return r;
+
+    xx::CoutN("init listener");
+    if (int r = xx::Make<TcpListener<EchoPeer>>( &ep, MakeSocketFD(12345) )->Listen()) return r;
+
     xx::CoutN("running...");
     while(ep.running) {
         if (int r = ep.Wait(1)) return r;

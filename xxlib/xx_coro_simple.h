@@ -25,6 +25,7 @@ namespace xx {
             void unhandled_exception() { std::rethrow_exception(std::current_exception()); }
         };
 
+        Coro() : h(nullptr) {}
         Coro(H h) : h(h) {}
         ~Coro() { if (h) h.destroy(); }
         Coro(Coro const& o) = delete;

@@ -126,6 +126,7 @@ struct Epoll {
         }
     }
 
+
     [[nodiscard]] inline int MakeSocket(int port, int sockType = SOCK_STREAM, char const* hostName = nullptr) {
         int fd{-1};
 
