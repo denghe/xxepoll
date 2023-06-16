@@ -24,9 +24,12 @@ namespace xx {
     };
 }
 
+/*******************************************************************************************************/
+/*******************************************************************************************************/
+
 [[nodiscard]] inline int MakeSocketFD(int port, int sockType = SOCK_STREAM, char const* hostName = nullptr) {
-    int fd{-1};
-    addrinfo hints;
+    int fd;
+    addrinfo hints{};
     bzero(&hints, sizeof(addrinfo));
     hints.ai_family = AF_UNSPEC;  // ipv4 / 6
     hints.ai_socktype = sockType; // SOCK_STREAM / SOCK_DGRAM
@@ -49,6 +52,9 @@ namespace xx {
     return fd;
 }
 
+/*******************************************************************************************************/
+/*******************************************************************************************************/
+
 struct Epoll;
 struct Socket {
 
@@ -56,6 +62,7 @@ struct Socket {
     int fd{-1};
     uint32_t events{};
     xx::Coro OnEvents;  // need assign
+    xx::Coros OnUpdate; // need Add Coroutines
 
     Socket() = delete;
     Socket(Socket const&) = delete;
@@ -69,13 +76,16 @@ struct Socket {
     void CloseFD();   // close(fd), fd=-1
 };
 
+/*******************************************************************************************************/
+/*******************************************************************************************************/
+
 struct Epoll {
     volatile int running{1};
     int efd{-1};
     addrinfo hints{};
     epoll_event event{};
     std::array<epoll_event, 4096> events{};
-    std::array<xx::Shared<Socket>, 40000> sockets;
+    std::unordered_map<int, xx::Shared<Socket>> sockets;
     std::array<uint8_t, 256 * 1024> buf{};
     std::array<iovec, UIO_MAXIOV> iovecs{};
 
@@ -92,16 +102,6 @@ struct Epoll {
         }
     }
 
-    template<typename T>
-    inline void Add(T&& s) {
-        sockets[s->fd] = std::forward<T>(s);
-    }
-
-    template<typename T>
-    inline void Remove(T& s) {
-        sockets[s->fd].Reset();
-    }
-
     [[nodiscard]] inline int Ctl(int fd, uint32_t flags, int op = EPOLL_CTL_ADD) {
         bzero(&event, sizeof(event));
         event.data.fd = fd;
@@ -109,7 +109,7 @@ struct Epoll {
         return epoll_ctl(efd, op, fd, &event);
     };
 
-    inline void CtlDel(int fd) {
+    inline void CtlDel(int fd) const {
         epoll_ctl(efd, EPOLL_CTL_DEL, fd, nullptr);
     };
 
@@ -118,29 +118,52 @@ struct Epoll {
         if (n == -1) return errno;
         for (int i = 0; i < n; ++i) {
             auto fd = events[i].data.fd;
-            if (fd >= sockets.size() || !sockets[fd]) {
+            auto iter = sockets.find(fd);
+            if (iter == sockets.end()) {
                 CtlDel(fd);
                 close(fd);
                 continue;
             }
-            auto&& s = *sockets[fd];
-            assert(s.fd == fd);
+            auto&& s = *iter->second;
+            xx_assert(s.fd == fd);
 
             s.events = events[i].events;
-            // todo: if (s.OnEvents) remove s from ???  delay close ???
             s.OnEvents();
+            if (s.fd == -1) {
+                sockets.erase(iter);
+            }
+        }
+        return 0;
+    }
+
+    int Run() {
+        while(running) {
+            if (int r = Wait(1)) return r;
+            for(auto iter = sockets.begin(); iter != sockets.end();) {
+                assert(iter->second);
+                auto& s = *iter->second;
+                assert(s.fd == iter->first);
+                s.OnUpdate();
+                if (s.fd == -1) {
+                    iter = sockets.erase(iter);
+                } else {
+                    ++iter;
+                }
+            }
         }
         return 0;
     }
 };
+
+/*******************************************************************************************************/
+/*******************************************************************************************************/
 
 Socket::Socket(Epoll* ep_, int fd_) {
     xx_assert(ep == nullptr);
     xx_assert(fd == -1);
     xx_assert(ep_);
     xx_assert(fd_);
-    xx_assert(fd_ < ep_->sockets.size());
-    xx_assert(!ep_->sockets[fd_]);
+    xx_assert(ep_->sockets.find(fd_) == ep_->sockets.end());
     ep = ep_;
     fd = fd_;
 }
@@ -148,7 +171,7 @@ Socket::Socket(Epoll* ep_, int fd_) {
 inline void Socket::CloseFD() {
     if (fd == -1) return;
     xx_assert(ep);
-    xx_assert(fd < (int)ep->sockets.size());
+    xx_assert(ep->sockets.find(fd) != ep->sockets.end());
     xx_assert(ep->sockets[fd]);
     xx_assert(ep->sockets[fd].pointer == this);
     close(fd);
@@ -164,7 +187,7 @@ template<typename T> concept TcpPeerBase_OnReceive = requires(T t) { t.OnReceive
 template<typename T> concept TcpPeerBase_OnClose = requires(T t) { t.OnClose(); };
 
 
-template<typename Peer>
+template<typename TcpPeer>
 struct [[maybe_unused]] TcpListener : Socket {
     using Socket::Socket;
 
@@ -172,12 +195,14 @@ struct [[maybe_unused]] TcpListener : Socket {
         if (auto r = listen(fd, SOMAXCONN); r == -1) return -1;
         if (auto r = ep->Ctl(fd, EPOLLIN); r == -1) return -2;
         OnEvents = OnEvents_();
-        ep->Add( xx::SharedFromThis(this) );
+        ep->sockets[fd] = xx::SharedFromThis(this);
         return 0;
     }
+
     ~TcpListener() {
         CloseFD();
     }
+
     xx::Coro OnEvents_() {
         while(true) {
             CoYield;
@@ -186,18 +211,18 @@ struct [[maybe_unused]] TcpListener : Socket {
         }
         CloseFD();
     }
+
     int HandleEvent() {
         sockaddr_in6 addr{};
         socklen_t len = sizeof(addr);
         int s = accept(fd, (sockaddr *) &addr, &len);
         if (s < 0) return -1;   // system error?
-        xx_assert(s < (int) ep->sockets.size());
-        xx_assert(!ep->sockets[s]);
+        xx_assert(ep->sockets.find(s) == ep->sockets.end());
         auto sg = xx::MakeScopeGuard([&] { close(s); });
         if (-1 == fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK)) return -2;  // system error?
         if (-1 == ep->Ctl(s, EPOLLIN)) return -3;   // system error?
-        auto p = xx::Make<Peer>(ep, s, addr);
-        if constexpr (TcpPeerBase_OnAccept<Peer>) {
+        auto p = xx::Make<TcpPeer>(ep, s, addr);
+        if constexpr (TcpPeerBase_OnAccept<TcpPeer>) {
             if (p->OnAccept()) return 0;
         }
         ep->sockets[s] = std::move(p);
@@ -210,9 +235,7 @@ struct [[maybe_unused]] TcpListener : Socket {
 /*******************************************************************************************************/
 
 template<typename Derived>
-struct TcpPeerBase : Socket {
-    using Socket::Socket;
-
+struct TcpSocket : Socket {
     sockaddr_in6 addr{};
     bool sending{};
     xx::DataQueue sendQueue;
@@ -232,7 +255,7 @@ struct TcpPeerBase : Socket {
     }
     */
 
-    TcpPeerBase(Epoll* ep_, int fd_, sockaddr_in6 const& addr_)
+    TcpSocket(Epoll* ep_, int fd_, sockaddr_in6 const& addr_)
         : Socket(ep_, fd_)
         , addr(addr_) {
         OnEvents = OnEvents_();
@@ -306,9 +329,9 @@ struct TcpPeerBase : Socket {
 /*******************************************************************************************************/
 /*******************************************************************************************************/
 
-struct EchoPeer : TcpPeerBase<EchoPeer> {
-    using Base = TcpPeerBase<EchoPeer>;
-    using Base::Base;
+struct EchoPeer : TcpSocket<EchoPeer> {
+    using TcpSocket::TcpSocket;
+
     int OnAccept() {
         xx::CoutN("peer accepted. ip = ", addr);
         return 0;
@@ -325,13 +348,21 @@ struct EchoPeer : TcpPeerBase<EchoPeer> {
 int main() {
     xx::CoutN("begin");
     Epoll ep;
-
     xx::CoutN("init listener");
     if (int r = xx::Make<TcpListener<EchoPeer>>( &ep, MakeSocketFD(12345) )->Listen()) return r;
-
     xx::CoutN("running...");
-    while(ep.running) {
-        if (int r = ep.Wait(1)) return r;
-    }
-	return 0;
+    return ep.Run();
 }
+
+/*******************************************************************************************************/
+/*******************************************************************************************************/
+
+//struct EchoPeer : TcpSocket<EchoPeer> {
+//    using TcpSocket::TcpSocket;
+//};
+//
+//int main() {
+//    Epoll ep;
+//    if (int r = xx::Make<TcpListener<EchoPeer>>( &ep, MakeSocketFD(12345) )->Listen()) return r;
+//    return ep.Run();
+//}
