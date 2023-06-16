@@ -471,6 +471,20 @@ namespace xx {
             }
         }
 
+        template<typename T = int32_t, typename = std::enable_if_t<std::is_convertible_v<T, uint8_t>>>
+        static Data_rw From(std::initializer_list<T> const &bytes) {
+            xx::Data_rw d;
+            d.Fill(bytes);
+            return d;
+        }
+
+        template<typename T = int32_t, typename = std::enable_if_t<std::is_convertible_v<T, std::string_view>>>
+        static Data_rw From(T const &sv) {
+            xx::Data_rw d;
+            d.WriteBuf(sv);
+            return d;
+        }
+
         // 从头部移除指定长度数据( 常见于拆包处理移除掉已经访问过的包数据, 将残留部分移动到头部 )
         [[maybe_unused]] XX_INLINE void RemoveFront(size_t const &siz) {
             assert(siz <= len);

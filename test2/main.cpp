@@ -58,11 +58,10 @@ namespace xx {
 struct Epoll;
 struct Socket {
 
-    Epoll* ep{};
+    int typeId{};   // for class type check
     int fd{-1};
-    uint32_t events{};
-    xx::Coro OnEvents;  // need assign
-    xx::Coros OnUpdate; // need Add Coroutines
+    Epoll* ep{};
+    void(*OnEvents)(Socket* s, uint32_t e) ;  // example:  = [](Socket* s, uint32_t e) { ((CLASSNAME*)s)->OnEvents_(e); };
 
     Socket() = delete;
     Socket(Socket const&) = delete;
@@ -127,8 +126,7 @@ struct Epoll {
             auto&& s = *iter->second;
             xx_assert(s.fd == fd);
 
-            s.events = events[i].events;
-            s.OnEvents();
+            s.OnEvents(&s, events[i].events);
             if (s.fd == -1) {
                 sockets.erase(iter);
             }
@@ -136,17 +134,23 @@ struct Epoll {
         return 0;
     }
 
-    int Run() {
+    // default: [](Socket& s){}
+    template<typename UpdateFunc>
+    int Run(UpdateFunc&& OnUpdate) {
         while(running) {
             if (int r = Wait(1)) return r;
-            for(auto iter = sockets.begin(); iter != sockets.end();) {
-                assert(iter->second);
-                auto& s = *iter->second;
-                assert(s.fd == iter->first);
-                s.OnUpdate();
-                if (s.fd == -1) {
-                    iter = sockets.erase(iter);
-                } else {
+            if constexpr(xx::IsLambda_v<UpdateFunc>) {
+                for (auto iter = sockets.begin(); iter != sockets.end();) {
+                    assert(iter->second);
+                    auto &s = *iter->second;
+                    assert(s.fd == iter->first);
+                    if (s.typeId >= 0) {
+                        OnUpdate(s);
+                        if (s.fd == -1) {
+                            iter = sockets.erase(iter);
+                            continue;
+                        }
+                    }
                     ++iter;
                 }
             }
@@ -189,12 +193,15 @@ template<typename T> concept TcpPeerBase_OnClose = requires(T t) { t.OnClose(); 
 
 template<typename TcpPeer>
 struct [[maybe_unused]] TcpListener : Socket {
-    using Socket::Socket;
+    TcpListener(Epoll* ep_, int fd_) : Socket(ep_, fd_) {
+        typeId = -1;
+        OnEvents = [](Socket* s, uint32_t e) { ((TcpListener*)s)->OnEvents_(e); };
+    }
 
     int Listen() {
-        if (auto r = listen(fd, SOMAXCONN); r == -1) return -1;
-        if (auto r = ep->Ctl(fd, EPOLLIN); r == -1) return -2;
-        OnEvents = OnEvents_();
+        assert(ep->sockets.find(fd) == ep->sockets.end());
+        if (auto r = listen(fd, SOMAXCONN); r == -1) return -2;
+        if (auto r = ep->Ctl(fd, EPOLLIN); r == -1) return -3;
         ep->sockets[fd] = xx::SharedFromThis(this);
         return 0;
     }
@@ -203,13 +210,12 @@ struct [[maybe_unused]] TcpListener : Socket {
         CloseFD();
     }
 
-    xx::Coro OnEvents_() {
-        while(true) {
-            CoYield;
-            if(events & EPOLLERR || events & EPOLLHUP) break;
-            while (HandleEvent() == 0);
+    void OnEvents_(uint32_t e) {
+        if(e & EPOLLERR || e & EPOLLHUP) {
+            CloseFD();
+            return;
         }
-        CloseFD();
+        while (HandleEvent() == 0);
     }
 
     int HandleEvent() {
@@ -258,7 +264,7 @@ struct TcpSocket : Socket {
     TcpSocket(Epoll* ep_, int fd_, sockaddr_in6 const& addr_)
         : Socket(ep_, fd_)
         , addr(addr_) {
-        OnEvents = OnEvents_();
+        OnEvents = [](Socket* s, uint32_t e) { ((Derived*)s)->OnEvents_(e); };
     }
 
     [[maybe_unused]] inline int Send(xx::Data &&data) {
@@ -293,32 +299,31 @@ struct TcpSocket : Socket {
         return ep->Ctl(fd, EPOLLIN | EPOLLOUT, EPOLL_CTL_MOD); // wait & watch writable state
     }
 
-    xx::Coro OnEvents_() {
-        while(true) {
-            CoYield;
-            if (events & EPOLLERR || events & EPOLLHUP) break;  // log?
-            if (events & EPOLLIN) {
-                if (!recv.cap) {
-                    recv.Reserve(ep->buf.size());
-                }
-                if (recv.len == recv.cap) break;    // log?  // too many data not handled
-                if (auto len = read(fd, recv.buf + recv.len, recv.cap - recv.len); len <= 0) break; // log? read failed
-                else {
-                    recv.len += len;
-                }
-                if constexpr (TcpPeerBase_OnReceive<Derived>) {
-                    ((Derived *) this)->OnReceive();
-                    if (fd == -1) break;
-                } else {
-                    Send(xx::Data(recv));   // default: echo logic
-                    recv.Clear();
-                }
+    void OnEvents_(uint32_t e) {
+        if (e & EPOLLERR || e & EPOLLHUP) goto LabCloseFD;  // log?
+        if (e & EPOLLIN) {
+            if (!recv.cap) {
+                recv.Reserve(ep->buf.size());
             }
-            if (events & EPOLLOUT) {
-                sending = false;
-                if (Send()) break;  // log?
+            if (recv.len == recv.cap) goto LabCloseFD;    // log?  // too many data not handled
+            if (auto len = read(fd, recv.buf + recv.len, recv.cap - recv.len); len <= 0) goto LabCloseFD; // log? read failed
+            else {
+                recv.len += len;
+            }
+            if constexpr (TcpPeerBase_OnReceive<Derived>) {
+                ((Derived *) this)->OnReceive();
+                if (fd == -1) goto LabCloseFD;
+            } else {
+                Send(xx::Data(recv));   // default: echo logic
+                recv.Clear();
             }
         }
+        if (e & EPOLLOUT) {
+            sending = false;
+            if (Send()) goto LabCloseFD;  // log?
+        }
+        return;
+    LabCloseFD:
         CloseFD();
         if constexpr (TcpPeerBase_OnClose<Derived>) {
             ((Derived *) this)->OnClose();
@@ -329,10 +334,22 @@ struct TcpSocket : Socket {
 /*******************************************************************************************************/
 /*******************************************************************************************************/
 
+#if 1
+
 struct EchoPeer : TcpSocket<EchoPeer> {
     using TcpSocket::TcpSocket;
 
+    xx::Coro Update = Update_();
+    xx::Coro Update_() {
+        Send(xx::Data::From("hello !"));
+        while(true) {
+            CoSleep(1s);
+            Send(xx::Data::From({'.'}));
+        }
+    }
+
     int OnAccept() {
+        xx::CoutN(typeId);
         xx::CoutN("peer accepted. ip = ", addr);
         return 0;
     }
@@ -351,18 +368,33 @@ int main() {
     xx::CoutN("init listener");
     if (int r = xx::Make<TcpListener<EchoPeer>>( &ep, MakeSocketFD(12345) )->Listen()) return r;
     xx::CoutN("running...");
-    return ep.Run();
+    return ep.Run([&](Socket& s){
+        auto& ep = (EchoPeer&)s;
+        ep.Update();
+    });
 }
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+#else
 
-//struct EchoPeer : TcpSocket<EchoPeer> {
-//    using TcpSocket::TcpSocket;
-//};
-//
-//int main() {
-//    Epoll ep;
-//    if (int r = xx::Make<TcpListener<EchoPeer>>( &ep, MakeSocketFD(12345) )->Listen()) return r;
-//    return ep.Run();
-//}
+struct EchoPeer : TcpSocket<EchoPeer> {
+    using TcpSocket::TcpSocket;
+    xx::Coro Update = Update_();
+    xx::Coro Update_() {
+        Send(xx::Data::From("hello !"));
+        while(true) {
+            CoSleep(1s);
+            Send(xx::Data::From({'.'}));
+        }
+    }
+};
+
+int main() {
+    Epoll ep;
+    if (int r = xx::Make<TcpListener<EchoPeer>>( &ep, MakeSocketFD(12345) )->Listen()) return r;
+    return ep.Run([&](Socket& s){
+        auto& ep = (EchoPeer&)s;
+        ep.Update();
+    });
+}
+
+#endif
