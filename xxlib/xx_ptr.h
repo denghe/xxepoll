@@ -297,6 +297,12 @@ namespace xx {
             return (T *) (h + 1);
         }
 
+        // unsafe
+        [[maybe_unused]] XX_INLINE void SetH(void* const& h_) {
+            h = (HeaderType*)h_;
+        }
+
+
         XX_INLINE void Reset() {
             if (h) {
                 if (h->weakCount == 1 && h->sharedCount == 0) {

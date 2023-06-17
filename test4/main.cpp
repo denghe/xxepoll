@@ -6,7 +6,7 @@ void CloseFD(int fd) {
 
 // for create listener or client socket fd
 template<bool enableReuseAddr = true>
-[[nodiscard]] int MakeSocketFD(int port, int sockType = SOCK_STREAM, char const* hostName = nullptr) {
+[[nodiscard]] int MakeSocketFD(int port, int sockType = SOCK_STREAM, char const* hostName = {}) {
     int fd;
     addrinfo hints{};
     bzero(&hints, sizeof(addrinfo));
@@ -95,7 +95,7 @@ struct FdBase {
     FdBase(FdBase const&) = delete;
     FdBase& operator=(FdBase const&) = delete;
     ~FdBase() {
-        xx_assert(fd != -1);    //DisposeFd();
+        xx_assert(fd == -1);    //FdDispose();
     }
     void FdDispose() {
         if (fd != -1) {
@@ -116,12 +116,14 @@ struct Epoll : FdBase {
     template<int op = EPOLL_CTL_ADD, uint32_t events = EPOLLIN | EPOLLOUT | EPOLLET>
     [[nodiscard]] int Ctl(int socketFD, void* ptr) const {
         epoll_event ee {events, ptr};
-        return epoll_ctl(fd, op, socketFD, &ee);
+        if (int r = epoll_ctl(fd, op, socketFD, &ee); r == -1) return -errno;
+        return 0;
     }
 
     // op == EPOLL_CTL_DEL
     [[nodiscard]] int CtlDel(int socketFD) const {
-        return epoll_ctl(fd, EPOLL_CTL_DEL, socketFD, nullptr);
+        if (int r = epoll_ctl(fd, EPOLL_CTL_DEL, socketFD, nullptr); r == -1) return -errno;
+        return 0;
     }
 };
 
@@ -130,7 +132,20 @@ struct Socket : FdBase {
     Epoll* ep{};
     xx::ListDoubleLinkIndexAndVersion<> iv;
     sockaddr_in6 addr{};
-    void(*OnEvents)(Socket* s, uint32_t e){} ;  // example:  = [](Socket* s, uint32_t e) { ((CLASSNAME*)s)->OnEvents_(e); };
+    int (*OnEvents)(Socket* s, uint32_t e){} ;  // example:  = [](Socket* s, uint32_t e) { return ((CLASSNAME*)s)->OnEvents_(e); };
+    void Fill(int fd_, Epoll* ep_, xx::ListDoubleLinkIndexAndVersion<> iv_, sockaddr_in6 const* addr_ = {}) {
+        assert(fd == -1);
+        assert(!ep);
+        assert(iv.index == -1 && iv.version == 0);
+        fd = fd_;
+        ep = ep_;
+        iv = iv_;
+        if (addr_) {
+            addr = *addr_;
+        } else {
+            bzero(&addr, sizeof(addr));
+        }
+    }
 };
 
 /*******************************************************************************************************/
@@ -141,10 +156,13 @@ struct NetCtxBase;
 template<typename PeerType>
 struct ListenerBase : Socket {
     using Socket::Socket;
-    void Init() {
-        OnEvents = [](Socket* s, uint32_t e) { ((ListenerBase<PeerType>*)s)->OnEvents_(e); };
+    ~ListenerBase() {
+        FdDispose();
     }
-    void OnEvents_(uint32_t e);
+    void Init() {
+        OnEvents = [](Socket* s, uint32_t e) { return ((ListenerBase<PeerType>*)s)->OnEvents_(e); };
+    }
+    int OnEvents_(uint32_t e);
 };
 
 template<typename T> concept Has_OnAccept = requires(T t) { t.OnAccept(); };
@@ -154,15 +172,29 @@ template<typename T> concept Has_OnClose = requires(T t) { t.OnClose(); };
 struct NetCtxBase : Epoll {
     using Epoll::Epoll;
     xx::ListDoubleLink<xx::Shared<Socket>> listeners, sockets;
+    std::array<epoll_event, 4096> events{};
+
+    ~NetCtxBase() {
+        FdDispose();
+    }
 
     template<typename ListenerType>
-    int Listen(int port, int sockType = SOCK_STREAM, char const* hostName = nullptr) {
+    int Listen(int port, int sockType = SOCK_STREAM, char const* hostName = {}) {
         int r = MakeSocketFD(port, sockType, hostName);
         if (r < 0) return r;
+        if (int n = listen(r, SOMAXCONN); n == -1) return -errno;
+
         auto& L = listeners.Emplace().Emplace<ListenerType>();
-        L->fd = r;
-        L->ep = this;
-        L->iv = listeners.Tail();
+        auto iv = listeners.Tail();
+
+        auto ws = L.ToWeak();
+        if (int n = Ctl(r, ws.h); n < 0) {
+            listeners.Remove(iv);
+            return n;   // system error?
+        }
+        ws.h = {}; // value has been moved to userdata
+
+        L->Fill(r, this, iv);
         L->Init();
         return 0;
     }
@@ -170,43 +202,105 @@ struct NetCtxBase : Epoll {
     template<typename PeerType>
     int MakePeer(int fd_, sockaddr_in6 const& addr) {
         auto& s = sockets.Emplace().Emplace<PeerType>();
-        s->fd = fd_;
-        s->ep = this;
-        s->iv = sockets.Tail();
-        s->addr = addr;
+        auto iv = sockets.Tail();
+
         auto ws = s.ToWeak();
-        if (-1 == Ctl(fd_, ws.h)) return -1;   // system error?
-        ws.h = nullptr; // hack
+        if (int n = Ctl(fd_, ws.h); n < 0) {
+            sockets.Remove(iv);
+            return n;   // system error?
+        }
+        ws.h = {}; // value has been moved to userdata
+
+        s->Fill(fd_, this, iv, &addr);
         if constexpr (Has_OnAccept<PeerType>) {
             s->OnAccept();
+        }
+        return 0;
+    }
+
+    int Wait(int timeoutMS) {
+        xx_assert(fd != -1);    // forget Init ?
+        int n = epoll_wait(fd, events.data(), (int) events.size(), timeoutMS);
+        if (n == -1) return -errno;
+        for (int i = 0; i < n; ++i) {
+            auto e = events[i].events;
+            xx::Weak<Socket> ws;
+            ws.SetH(events[i].data.ptr);    // temporary set
+            if (auto s = ws.Lock();) {
+                if (int r = s->OnEvents(s.pointer, e)) {
+                    // todo: CtlDel ? FdDispose ?
+                    if (s->iv.index != -1) {
+                        sockets.Remove(s->iv);
+                    }
+                } else {
+                    ws.h = {};  // avoid release
+                }
+            } else {
+                // todo: CtlDel ? FdDispose ?
+            }
         }
         return 0;
     }
 };
 
 template<typename PeerType>
-void ListenerBase<PeerType>::OnEvents_(uint32_t e) {
+int ListenerBase<PeerType>::OnEvents_(uint32_t e) {
     assert(!(e & EPOLLERR || e & EPOLLHUP));
     auto HandleEvent = [this] {
         sockaddr_in6 addr{};
         int s = MakeAcceptFD(fd, &addr);
-        if (s < 0) return -1;   // no more accept or system error?
+        if (s == 0) return 0;   // no more accept?
+        else if (s < 0) return -errno;   // system error?
         ((NetCtxBase*)ep)->template MakePeer<PeerType>(s, addr);
         return 0;
     };
-    while (HandleEvent() == 0);
+LabRepeat:
+    int r = HandleEvent();
+    if (r == 0) goto LabRepeat;
+    else return r;
 }
 
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
 
+namespace xx {
+    template<>
+    struct StringFuncs<sockaddr const *, void> {
+        static inline void Append(std::string &s, sockaddr const *const &in) {
+            if (in) {
+                char hbuf[NI_MAXHOST], sbuf[NI_MAXSERV];
+                if (!getnameinfo(in, in->sa_family == AF_INET6 ? INET6_ADDRSTRLEN : INET_ADDRSTRLEN, hbuf, sizeof hbuf,
+                                 sbuf, sizeof sbuf, NI_NUMERICHOST | NI_NUMERICSERV)) {
+                    s.append(hbuf);
+                    s.push_back(':');
+                    s.append(sbuf);
+                }
+            }
+        }
+    };
+
+    template<>
+    struct StringFuncs<sockaddr_in6, void> {
+        static inline void Append(std::string &s, sockaddr_in6 const &in) {
+            StringFuncs<sockaddr const *>::Append(s, (sockaddr const *) &in);
+        }
+    };
+}
+
 struct Peer : Socket {
+    void OnAccept() {
+        xx::CoutN("peer accepted. ip = ", addr);
+    }
 };
 
 int main() {
     NetCtxBase nc;
+    if (int r = nc.Init(); r < 0) return r;
     nc.Listen<ListenerBase<Peer>>(12345);
-    //
-    return 0;
+    int r = 0;
+    do {
+        r = nc.Wait(1);
+    } while(r == 0);
+    return r;
 }
