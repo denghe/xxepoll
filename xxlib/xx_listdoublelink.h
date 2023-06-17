@@ -6,7 +6,13 @@ namespace xx {
 	// double link + version's xx::ListLink but performance slowly 1/2
 	// Example at the bottom of the code
 
-	template<typename T, typename SizeType = ptrdiff_t, typename VersionType = size_t>
+    template<typename SizeType = ptrdiff_t, typename VersionType = size_t>
+    struct ListDoubleLinkIndexAndVersion {
+        SizeType index{ -1 };
+        VersionType version{ 0 };
+    };
+
+    template<typename T, typename SizeType = ptrdiff_t, typename VersionType = size_t>
 	struct ListDoubleLink {
 
 		struct Node {
@@ -15,10 +21,7 @@ namespace xx {
 			T value;
 		};
 
-		struct IndexAndVersion {
-			SizeType index{ -1 };
-			VersionType version{ 0 };
-		};
+		using IndexAndVersion =  ListDoubleLinkIndexAndVersion<SizeType, VersionType>;
 
 		Node* buf{};
 		SizeType cap{}, len{};

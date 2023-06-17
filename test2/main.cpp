@@ -222,7 +222,7 @@ struct [[maybe_unused]] TcpListener : Socket {
         sockaddr_in6 addr{};
         socklen_t len = sizeof(addr);
         int s = accept(fd, (sockaddr *) &addr, &len);
-        if (s < 0) return -1;   // system error?
+        if (s < 0) return -1;   // no more accept or system error?
         xx_assert(ep->sockets.find(s) == ep->sockets.end());
         auto sg = xx::MakeScopeGuard([&] { close(s); });
         if (-1 == fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK)) return -2;  // system error?
