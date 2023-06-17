@@ -471,6 +471,7 @@ namespace xx {
             }
         }
 
+        // fill likely. make instance
         template<typename T = int32_t, typename = std::enable_if_t<std::is_convertible_v<T, uint8_t>>>
         static Data_rw From(std::initializer_list<T> const &bytes) {
             xx::Data_rw d;
@@ -495,6 +496,10 @@ namespace xx {
             }
         }
 
+        // for fill read data
+        Span GetFreeSpace() const {
+            return {buf + len, cap - len};
+        }
 
         /***************************************************************************************************************************/
 
