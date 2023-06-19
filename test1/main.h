@@ -1,5 +1,5 @@
 ﻿#pragma once
-#ifndef XX2D_TESTS2_MAIN_H_
-#define XX2D_TESTS2_MAIN_H_
+#ifndef XXEPOLL_TEST1_MAIN_H_
+#define XXEPOLL_TEST1_MAIN_H_
 #include "xx_coro_simple.h"
 #endif
