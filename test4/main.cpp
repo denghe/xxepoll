@@ -127,13 +127,21 @@ struct Epoll : FdBase {
     }
 };
 
+/*******************************************************************************************************/
+/*******************************************************************************************************/
+
+using IdxVer = xx::ListDoubleLinkIndexAndVersion<int, uint>;    // int + uint  for store to  epoll int64 user data
+
 struct Socket : FdBase {
     using FdBase::FdBase;
+
     Epoll* ep{};
-    xx::ListDoubleLinkIndexAndVersion<> iv;
+    IdxVer iv;
     sockaddr_in6 addr{};
+
     int (*OnEvents)(Socket* s, uint32_t e){} ;  // example:  = [](Socket* s, uint32_t e) { return ((CLASSNAME*)s)->OnEvents_(e); };
-    void Fill(int fd_, Epoll* ep_, xx::ListDoubleLinkIndexAndVersion<> iv_, sockaddr_in6 const* addr_ = {}) {
+
+    void Fill(int fd_, Epoll* ep_, IdxVer iv_, sockaddr_in6 const* addr_ = {}) {
         assert(fd == -1);
         assert(!ep);
         assert(iv.index == -1 && iv.version == 0);
@@ -148,8 +156,9 @@ struct Socket : FdBase {
     }
 };
 
-/*******************************************************************************************************/
-/*******************************************************************************************************/
+using SocketsContaier = xx::ListDoubleLink<xx::Shared<Socket>, int, uint>;
+
+
 
 struct NetCtxBase;
 
@@ -165,37 +174,44 @@ struct ListenerBase : Socket {
     int OnEvents_(uint32_t e);
 };
 
+
+
+
 template<typename T> concept Has_OnAccept = requires(T t) { t.OnAccept(); };
 template<typename T> concept Has_OnReceive = requires(T t) { t.OnReceive(); };
 template<typename T> concept Has_OnClose = requires(T t) { t.OnClose(); };
 
 struct NetCtxBase : Epoll {
     using Epoll::Epoll;
-    xx::ListDoubleLink<xx::Shared<Socket>> listeners, sockets;
-    std::array<epoll_event, 4096> events{};
+    std::array<epoll_event, 4096> events{}; // tmp epoll events container
+
+    SocketsContaier sockets;    // listeners + accepted peers container
+    IdxVer lastListenerIV;  // for visit all sockets, skip listeners ( Foreach( []{}, Next( iv ) )
 
     ~NetCtxBase() {
         FdDispose();
     }
 
+    // make sure sockets only contain listeners. do not remove them from container
     template<typename ListenerType>
     int Listen(int port, int sockType = SOCK_STREAM, char const* hostName = {}) {
         int r = MakeSocketFD(port, sockType, hostName);
         if (r < 0) return r;
         if (int n = listen(r, SOMAXCONN); n == -1) return -errno;
 
-        auto& L = listeners.Emplace().Emplace<ListenerType>();
-        auto iv = listeners.Tail();
-
-        auto ws = L.ToWeak();
-        if (int n = Ctl(r, ws.h); n < 0) {
-            listeners.Remove(iv);
-            return n;   // system error?
-        }
-        ws.h = {}; // value has been moved to userdata
-
-        L->Fill(r, this, iv);
-        L->Init();
+        // todo
+//        auto& L = listeners.Emplace().Emplace<ListenerType>();
+//        auto iv = listeners.Tail();
+//
+//        auto ws = L.ToWeak();
+//        if (int n = Ctl(r, ws.h); n < 0) {
+//            listeners.Remove(iv);
+//            return n;   // system error?
+//        }
+//        ws.h = {}; // value has been moved to userdata
+//
+//        L->Fill(r, this, iv);
+//        L->Init();
         return 0;
     }
 

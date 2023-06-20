@@ -58,7 +58,7 @@ namespace xx {
         Coros& operator=(Coros const&) = delete;
         Coros(Coros&&) = default;
         Coros& operator=(Coros&&) = default;
-        Coros(int32_t cap = 8) {
+        explicit Coros(int32_t cap = 8) {
             coros.Reserve(cap);
         }
 
@@ -87,8 +87,12 @@ namespace xx {
             return coros.Count();
         }
 
-        int32_t Count() const {
+        [[nodiscard]] int32_t Count() const {
             return coros.Count();
+        }
+
+        [[nodiscard]] bool Empty() const {
+            return !coros.Count();
         }
 
         void Reserve(int32_t cap) {
