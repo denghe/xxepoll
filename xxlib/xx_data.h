@@ -1,5 +1,4 @@
 ﻿#pragma once
-#include "xx_includes.h"
 #include "xx_typetraits.h"
 #include "xx_mem.h"
 
@@ -84,6 +83,10 @@ namespace xx {
             return { (char*)buf, len };
         }
     };
+
+    // mem moveable tag
+    template<>
+    struct IsPod<Span, void> : std::true_type {};
 
     // Data 序列化 / 反序列化 基础适配模板
     template<typename T, typename ENABLED>
@@ -333,6 +336,10 @@ namespace xx {
         template<typename T>
         int ReadCore(T& v);
     };
+
+    // mem moveable tag
+    template<>
+    struct IsPod<Data_r, void> : std::true_type {};
 
 
     /***************************************************************************************************************************/
@@ -684,6 +691,11 @@ namespace xx {
             offset = 0;
         }
     };
+
+    // mem moveable tag
+    template<size_t bufHeaderReserveLen>
+    struct IsPod<Data_rw<bufHeaderReserveLen>, void> : std::true_type {};
+
 
     using Data = Data_rw<sizeof(size_t)*2>;
     using DataView = Data_r;

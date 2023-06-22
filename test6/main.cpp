@@ -103,7 +103,7 @@ template<size_t reserveLen = 1024 * 256>
     auto buf = (char*)buf_;
     auto len = len_;
     LabRepeat:
-    if (auto n = ::write(fd, buf, len); n > 0) {
+    if (auto n = ::write(fd, buf, len); n != -1) {
         if (len -= n; len > 0) {
             buf += n;
             goto LabRepeat;
@@ -224,8 +224,8 @@ struct NetCtxBase : Epoll {
     }
 
     // create listener & listen & return weak
-    template<typename ListenerType, class = std::enable_if_t<std::is_base_of_v<Socket<Derived>, ListenerType>>>
-    xx::Weak<ListenerType> Listen(int port, int sockType = SOCK_STREAM, char const* hostName = {}) {
+    template<typename PeerType, class = std::enable_if_t<std::is_base_of_v<Socket<Derived>, PeerType>>>
+    void Listen(int port, int sockType = SOCK_STREAM, char const* hostName = {}) {
         int r = MakeSocketFD(port, sockType, hostName);
         xx_assert(r >= 0);
         xx_assert(-1 != listen(r, SOMAXCONN));
@@ -233,12 +233,11 @@ struct NetCtxBase : Epoll {
         auto iv = sockets.Tail();
         auto rtv = Ctl<EPOLL_CTL_ADD, (uint32_t)EPOLLIN>(r, (void*&)iv);
         xx_assert(!rtv);
-        auto L = xx::Make<ListenerType>();
+        auto L = xx::Make<ListenerBase<Derived, PeerType>>();
         L->Fill(r, (Derived*)this, iv);
-        L->OnEvents__ = [](FdBase* s, uint32_t e) { return ((ListenerType*)s)->OnEvents(e); };
+        L->OnEvents__ = [](FdBase* s, uint32_t e) { return ((ListenerBase<Derived, PeerType>*)s)->OnEvents(e); };
         c = L;
         lastListenerIV = iv;
-        return L;
     }
 
     // for listener
@@ -306,20 +305,41 @@ struct Peer : Socket<NetCtx> {
         xx::CoutN("Peer OnAccept. ip = ", addr);
         return 0;
     }
-    //xx::Data recv;
+
+    xx::Data recv;
+    xx::Queue<xx::DataShared> sents;
+    size_t firstDSSentLen{};
+    bool blocked{};
+
     int OnEvents(uint32_t e) {
-        xx::CoutN("Peer OnEvents. e = ", e, ". ip = ", addr);
-        // echo
-        //if (int r = ReadData(fd, recv) < 0) return r;
+        // todo: check e is error
+        //xx::CoutN("Peer OnEvents. e = ", e, ". ip = ", addr);
+        if (int r = ReadData(fd, recv)) return r;
+        //xx::CoutN(recv);
+        if (sents.Empty()) {
+            auto [n, b] = WriteData(fd, recv.buf, recv.len);  // echo
+            if (n < 0) return (int)n;
+
+        }
+        if (!sents.Empty()) {
+
+        }
+
+//        xx::Data d(recv);
+//        sents.Push(std::move(d));      // echo
+
+
+
+
+        recv.Clear();
         return 0;
     }
 };
-struct Listener : ListenerBase<NetCtx, Peer> {};
 
 int main() {
     NetCtx nc;
-    nc.Listen<Listener>(12345);
-    nc.Listen<Listener>(12333);
+    nc.Listen<Peer>(12345);
+    nc.Listen<Peer>(12333);
     while(nc.Wait(1));
     return 0;
 }

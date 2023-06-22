@@ -329,6 +329,9 @@ namespace xx {
 			}
 		}
 	};
+
+    template<typename T, typename IndexType, typename VersionType>
+    struct IsPod<ListDoubleLink<T, IndexType, VersionType>> : std::true_type {};
 }
 
 

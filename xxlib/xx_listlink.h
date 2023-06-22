@@ -204,4 +204,7 @@ namespace xx {
 			}
 		}
 	};
+
+    template<typename T, typename SizeType, SizeType initCap>
+    struct IsPod<ListLink<T, SizeType, initCap>> : std::true_type {};
 }

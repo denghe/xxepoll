@@ -6,6 +6,7 @@
 #include "xx_coro_simple.h"
 #include "xx_ptr.h"
 #include "xx_data_queue.h"
+#include "xx_data_shared.h"
 #include "xx_listdoublelink.h"
 
 #include <csignal>
