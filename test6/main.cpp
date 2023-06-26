@@ -104,13 +104,14 @@ template<size_t reserveLen = 1024 * 256>
     auto len = len_;
     LabRepeat:
     if (auto n = ::write(fd, buf, len); n != -1) {
+        assert(n <= len);
         if (len -= n; len > 0) {
             buf += n;
             goto LabRepeat;
-        } else return {(ssize_t)len_, false };
+        } else return {(ssize_t)len_, false };  // success
     } else {
-        if (auto e = errno; e == EAGAIN || e == EWOULDBLOCK) return {(char*)buf_ - buf + n, true };
-        else return {-e, false };
+        if (auto e = errno; e == EAGAIN || e == EWOULDBLOCK) return {(char*)buf_ - buf + n, true }; // success
+        else return {-e, false };   // error
     }
 }
 
@@ -308,29 +309,38 @@ struct Peer : Socket<NetCtx> {
 
     xx::Data recv;
     xx::Queue<xx::DataShared> sents;
-    size_t firstDSSentLen{};
-    bool blocked{};
+    size_t sentsTopOffset{};
 
     int OnEvents(uint32_t e) {
-        // todo: check e is error
         //xx::CoutN("Peer OnEvents. e = ", e, ". ip = ", addr);
-        if (int r = ReadData(fd, recv)) return r;
-        //xx::CoutN(recv);
-        if (sents.Empty()) {
-            auto [n, b] = WriteData(fd, recv.buf, recv.len);  // echo
-            if (n < 0) return (int)n;
-
+        if (e & EPOLLERR || e & EPOLLHUP) return -1;    // fatal error
+        if (e & EPOLLOUT) {
+            while (!sents.Empty()) {
+                auto& d = sents.Top();
+                auto [n, b] = WriteData(fd, d.GetBuf() + sentsTopOffset, d.GetLen() - sentsTopOffset);
+                if (n < 0) return (int) n;
+                if (b) {
+                    sentsTopOffset -= n;
+                    goto LabRead;
+                } else {
+                    sentsTopOffset = 0;
+                    sents.Pop();
+                }
+            }
         }
-        if (!sents.Empty()) {
-
+    LabRead:
+        if (e & EPOLLIN) {
+            if (int r = ReadData(fd, recv)) return r;
+            // echo back
+            if (sents.Empty()) {
+                auto [n, b] = WriteData(fd, recv.buf, recv.len);
+                if (n < 0) return (int) n;
+                assert(b && n < recv.len || !b && n == recv.len);
+                if (!b) goto LabEnd;
+                sents.Emplace(xx::Data(recv.buf + n, recv.len - n));
+            }
         }
-
-//        xx::Data d(recv);
-//        sents.Push(std::move(d));      // echo
-
-
-
-
+    LabEnd:
         recv.Clear();
         return 0;
     }
