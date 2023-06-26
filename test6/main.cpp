@@ -91,7 +91,7 @@ template<size_t reserveLen = 1024 * 256>
         d.len += n;
         if (n == span.len) goto LabBegin;
         return 0;
-    } else if (n == 0) return 0;
+    } else if (n == 0) return -999;
     else if (auto e = errno; e == EAGAIN || e == EWOULDBLOCK) goto LabRepeat;
     else return -e;
 }
@@ -199,6 +199,7 @@ struct Socket : FdBase {
 
 };
 
+
 template<typename NetCtxType, typename PeerType>
 struct ListenerBase : Socket<NetCtxType> {
     using Socket<NetCtxType>::Socket;
@@ -207,6 +208,7 @@ struct ListenerBase : Socket<NetCtxType> {
     }
     int OnEvents(uint32_t e);
 };
+
 
 template<typename Derived>
 struct NetCtxBase : Epoll {
@@ -226,7 +228,7 @@ struct NetCtxBase : Epoll {
 
     // create listener & listen & return weak
     template<typename PeerType, class = std::enable_if_t<std::is_base_of_v<Socket<Derived>, PeerType>>>
-    void Listen(int port, int sockType = SOCK_STREAM, char const* hostName = {}) {
+    int Listen(int port, int sockType = SOCK_STREAM, char const* hostName = {}) {
         int r = MakeSocketFD(port, sockType, hostName);
         xx_assert(r >= 0);
         xx_assert(-1 != listen(r, SOMAXCONN));
@@ -239,6 +241,7 @@ struct NetCtxBase : Epoll {
         L->OnEvents__ = [](FdBase* s, uint32_t e) { return ((ListenerBase<Derived, PeerType>*)s)->OnEvents(e); };
         c = L;
         lastListenerIV = iv;
+        return r;
     }
 
     // for listener
@@ -271,6 +274,7 @@ struct NetCtxBase : Epoll {
             auto& s = sockets[iv];
             xx_assert(s);
             if (int r = s->OnEvents__(s.pointer, events[i].events)) {
+                // log?
                 xx_assert(-1 != CtlDel(s->fd));
                 s->FdDispose();
                 sockets.Remove(iv);
@@ -279,6 +283,7 @@ struct NetCtxBase : Epoll {
         return sockets.Count();
     }
 };
+
 
 template<typename NetCtxType, typename PeerType>
 int ListenerBase<NetCtxType, PeerType>::OnEvents(uint32_t e) {
@@ -294,53 +299,69 @@ int ListenerBase<NetCtxType, PeerType>::OnEvents(uint32_t e) {
 LabRepeat:
     int r = HandleEvent();
     if (r == 0) goto LabRepeat;
+    else if (r == 1) return 0;
     else return r;
 }
+
+
+template<typename NetCtxType>
+struct TcpSocket : Socket<NetCtxType> {
+    using Socket<NetCtxType>::Socket;
+
+    xx::Queue<xx::DataShared> sents;
+    size_t sentsTopOffset{};
+
+    // call by events & EPOLLOUT
+    int Send() {
+        while (!sents.Empty()) {
+            auto &d = sents.Top();
+            auto [n, b] = ::WriteData(this->fd, d.GetBuf() + sentsTopOffset, d.GetLen() - sentsTopOffset);
+            if (n < 0) return (int) n;
+            if (b) {
+                sentsTopOffset -= n;
+                break;
+            } else {
+                sentsTopOffset = 0;
+                sents.Pop();
+            }
+        }
+        return 0;
+    }
+
+    int Send(void* buf, size_t len) {
+        if (sents.Empty()) {
+            auto [n, b] = ::WriteData(this->fd, buf, len);
+            if (n < 0) return (int) n;
+            assert(b && n < len || !b && n == len);
+            if (b) {
+                sents.Emplace(xx::Data((char *) buf + n, len - n));
+            }
+        } else {
+            sents.Emplace(xx::Data(buf, len));
+        }
+        return 0;
+    }
+};
 
 /*******************************************************************************************************/
 /*******************************************************************************************************/
 
 struct NetCtx : NetCtxBase<NetCtx> {};
-struct Peer : Socket<NetCtx> {
-    int OnAccept() {
-        xx::CoutN("Peer OnAccept. ip = ", addr);
-        return 0;
-    }
+struct Peer : TcpSocket<NetCtx> {
+    int OnAccept() { xx::CoutN("Peer OnAccept. fd = ", fd," ip = ", addr); return 0; }
+    ~Peer() { xx::CoutN("Peer ~Peer. ip = ", addr); }
 
-    xx::Data recv;
-    xx::Queue<xx::DataShared> sents;
-    size_t sentsTopOffset{};
-
+    xx::Data recv;  // received data container
     int OnEvents(uint32_t e) {
-        //xx::CoutN("Peer OnEvents. e = ", e, ". ip = ", addr);
-        if (e & EPOLLERR || e & EPOLLHUP) return -1;    // fatal error
+        xx::CoutN("Peer OnEvents. fd = ", fd," ip = ", addr, ". e = ", e);
+        if (e & EPOLLERR || e & EPOLLHUP) return -999;    // fatal error
         if (e & EPOLLOUT) {
-            while (!sents.Empty()) {
-                auto& d = sents.Top();
-                auto [n, b] = WriteData(fd, d.GetBuf() + sentsTopOffset, d.GetLen() - sentsTopOffset);
-                if (n < 0) return (int) n;
-                if (b) {
-                    sentsTopOffset -= n;
-                    goto LabRead;
-                } else {
-                    sentsTopOffset = 0;
-                    sents.Pop();
-                }
-            }
+            if (int r = Send()) return r;
         }
-    LabRead:
         if (e & EPOLLIN) {
             if (int r = ReadData(fd, recv)) return r;
-            // echo back
-            if (sents.Empty()) {
-                auto [n, b] = WriteData(fd, recv.buf, recv.len);
-                if (n < 0) return (int) n;
-                assert(b && n < recv.len || !b && n == recv.len);
-                if (!b) goto LabEnd;
-                sents.Emplace(xx::Data(recv.buf + n, recv.len - n));
-            }
+            if (int r = Send(recv.buf, recv.len)) return r; // echo back
         }
-    LabEnd:
         recv.Clear();
         return 0;
     }
@@ -348,8 +369,10 @@ struct Peer : Socket<NetCtx> {
 
 int main() {
     NetCtx nc;
-    nc.Listen<Peer>(12345);
-    nc.Listen<Peer>(12333);
+    auto fd = nc.Listen<Peer>(12345);
+    xx::CoutN("listener 12345 fd = ", fd);
+    fd = nc.Listen<Peer>(12333);
+    xx::CoutN("listener 12333 fd = ", fd);
     while(nc.Wait(1));
     return 0;
 }
