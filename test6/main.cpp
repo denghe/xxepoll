@@ -30,7 +30,25 @@ void CloseFD(int fd) {
     for (int r = close(fd); r == -1 && errno == EINTR;);
 }
 
-// for create listener or client socket fd
+inline int FillAddress(std::string const &ip, int const &port, sockaddr_in6 &addr) {
+    bzero(&addr, sizeof(addr));
+
+    if (ip.find(':') == std::string::npos) {        // ipv4
+        auto a = (sockaddr_in *) &addr;
+        a->sin_family = AF_INET;
+        a->sin_port = htons((uint16_t) port);
+        if (!inet_pton(AF_INET, ip.c_str(), &a->sin_addr)) return -1;
+    } else {                                            // ipv6
+        auto a = &addr;
+        a->sin6_family = AF_INET6;
+        a->sin6_port = htons((uint16_t) port);
+        if (!inet_pton(AF_INET6, ip.c_str(), &a->sin6_addr)) return -1;
+    }
+
+    return 0;
+}
+
+// for create listener
 template<bool enableReuseAddr = true>
 [[nodiscard]] int MakeSocketFD(int port, int sockType = SOCK_STREAM, char const* hostName = {}) {
     int fd;
@@ -80,15 +98,18 @@ template<bool enableReuseAddr = true>
 // read all data from fd. append to d
 // success: return 0
 // < 0 == -errno, need close fd
-template<size_t reserveLen = 1024 * 256>
+template<size_t reserveLen = 1024 * 256, size_t maxLen = 0/*1024 * 1024 * 4*/>
 [[nodiscard]] int ReadData(int fd, xx::Data& d) {
-    LabBegin:
+LabBegin:
     d.Reserve(reserveLen);
     auto span = d.GetFreeSpace();
     assert(span.len);
-    LabRepeat:
+LabRepeat:
     if (auto n = ::read(fd, span.buf, span.len); n > 0) {
         d.len += n;
+        if constexpr(maxLen) {
+            if (d.len > maxLen) return -9999;
+        }
         if (n == span.len) goto LabBegin;
         return 0;
     } else if (n == 0) return -999;
@@ -102,7 +123,7 @@ template<size_t reserveLen = 1024 * 256>
 [[nodiscard]] std::pair<ssize_t, bool> WriteData(int fd, void* buf_, size_t len_) {
     auto buf = (char*)buf_;
     auto len = len_;
-    LabRepeat:
+LabRepeat:
     if (auto n = ::write(fd, buf, len); n != -1) {
         assert(n <= len);
         if (len -= n; len > 0) {
@@ -196,9 +217,29 @@ struct Socket : FdBase {
             bzero(&addr, sizeof(addr));
         }
     }
-
 };
 
+template<typename NetCtxType>
+struct Connector : Socket<NetCtxType> {
+////    int Connect(sockaddr_in6 const& addr_) {
+////        xx_assert(fd == -1);
+////        // this->FdDispose();
+////        // todo: remove from netctx ?
+////        fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+////        if (fd == -1) return -errno;
+////        if (connect(fd, (sockaddr *) &addr, sizeof(addr)) == -1) {
+////            if (errno != EINPROGRESS) return -4;
+////        }
+////        return 0;
+////    }
+//
+//    int OnEvents(uint32_t e) {
+//        if (e & EPOLLERR || e & EPOLLHUP) return -888;    // fatal error
+//        if (e & EPOLLOUT) {
+//        }
+//        return 0;
+//    }
+};
 
 template<typename NetCtxType, typename PeerType>
 struct ListenerBase : Socket<NetCtxType> {
@@ -282,6 +323,15 @@ struct NetCtxBase : Epoll {
         }
         return sockets.Count();
     }
+
+
+    xx::Coros coros;
+
+    template<typename PeerType>
+    xx::Coro Connect(sockaddr_in6 const& addr, int &o1, xx::Shared<PeerType> &o2, int timeoutMS) {
+        co_yield 0;
+        // todo
+    }
 };
 
 
@@ -341,6 +391,23 @@ struct TcpSocket : Socket<NetCtxType> {
         }
         return 0;
     }
+
+    template<typename DataType>
+    int Send(DataType&& d) {
+        auto buf = d.GetBuf();
+        auto len = d.GetLen();
+        if (sents.Empty()) {
+            auto [n, b] = ::WriteData(this->fd, buf, len);
+            if (n < 0) return (int) n;
+            assert(b && n < len || !b && n == len);
+            if (b) {
+                sents.Emplace(xx::Data((char *) buf + n, len - n));
+            }
+        } else {
+            sents.Emplace(std::forward<DataType>(d));
+        }
+        return 0;
+    }
 };
 
 /*******************************************************************************************************/
@@ -354,7 +421,7 @@ struct Peer : TcpSocket<NetCtx> {
     xx::Data recv;  // received data container
     int OnEvents(uint32_t e) {
         xx::CoutN("Peer OnEvents. fd = ", fd," ip = ", addr, ". e = ", e);
-        if (e & EPOLLERR || e & EPOLLHUP) return -999;    // fatal error
+        if (e & EPOLLERR || e & EPOLLHUP) return -888;    // fatal error
         if (e & EPOLLOUT) {
             if (int r = Send()) return r;
         }
@@ -362,10 +429,11 @@ struct Peer : TcpSocket<NetCtx> {
             if (int r = ReadData(fd, recv)) return r;
             if (int r = Send(recv.buf, recv.len)) return r; // echo back
         }
-        recv.Clear();
+        recv.Clear(/*true*/);   // recv.Shrink();
         return 0;
     }
 };
+
 
 int main() {
     NetCtx nc;
@@ -373,6 +441,16 @@ int main() {
     xx::CoutN("listener 12345 fd = ", fd);
     fd = nc.Listen<Peer>(12333);
     xx::CoutN("listener 12333 fd = ", fd);
-    while(nc.Wait(1));
+    nc.coros.Add([](NetCtx& nc)->xx::Coro{
+        sockaddr_in6 addr;
+        int r = FillAddress("127.0.0.1", 12333, addr);
+        xx_assert(r != -1);
+        xx::Shared<Peer> p;
+    LabRetry:
+        CoAwait( nc.Connect(addr, r, p, 3000) );
+        // if ( r == ???? ) goto LabRetry;
+        // store p ?
+    }(nc));
+    while(nc.Wait(1)) nc.coros();
     return 0;
 }

@@ -73,7 +73,7 @@ namespace xx {
             coros.Clear();
         }
 
-        bool operator()() {
+        int32_t operator()() {
             int prev = -1, next{};
             for (auto idx = coros.head; idx != -1;) {
                 if (coros[idx].Resume()) {

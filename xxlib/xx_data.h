@@ -458,6 +458,19 @@ namespace xx {
             cap = siz - bufHeaderReserveLen;
         }
 
+        // buf cap resize to len
+        void Shrink() {
+            if (!len) {
+                Clear(true);
+            } else if (cap > len * 2) {
+                auto newBuf = ((uint8_t*)malloc(bufHeaderReserveLen + len)) + bufHeaderReserveLen;
+                memcpy(newBuf, buf, len);
+                free(buf - bufHeaderReserveLen);
+                buf = newBuf;
+                cap = len;
+            }
+        }
+
         // 修改数据长度( 可能扩容 )。会返回旧长度
         XX_INLINE size_t Resize(size_t const &newLen) {
             if (newLen > cap) {
