@@ -526,22 +526,26 @@ int main() {
     fd = nc.Listen<ServerPeer>(12333);
     xx::CoutN("listener 12333 fd = ", fd);
 
-    nc.coros.Add([](NetCtx& nc)->xx::Coro{
-        sockaddr_in6 addr{};
-        xx_assert(-1 != FillAddress("127.0.0.1", 12333, addr));
-    LabRetry:
-        xx::CoutN("********************************************************* begin connect.");
-        int r{};
-        xx::Weak<ClientPeer> w;
-        CoSleep(0.2s);
-        CoAwait( nc.Connect(r, w, addr, 3) );
-        if (!w) goto LabRetry;     // log r ?
-        xx::CoutN("********************************************************* connected.");
-    LabLogic:
-        if (w) {
-            w->Send((void *) "a", 1);   // send first
-        }
-    }(nc));
+    for (int i = 0; i < 2; ++i) {
+
+        nc.coros.Add([](NetCtx& nc)->xx::Coro{
+            sockaddr_in6 addr{};
+            xx_assert(-1 != FillAddress("127.0.0.1", 12333, addr));
+        LabRetry:
+            xx::CoutN("********************************************************* begin connect.");
+            int r{};
+            xx::Weak<ClientPeer> w;
+            CoSleep(0.2s);
+            CoAwait( nc.Connect(r, w, addr, 3) );
+            if (!w) goto LabRetry;     // log r ?
+            xx::CoutN("********************************************************* connected.");
+        LabLogic:
+            if (w) {
+                w->Send((void *) "a", 1);   // send first
+            }
+        }(nc));
+
+    }
 
     auto secs = xx::NowSteadyEpochSeconds();
     double timePool{};
