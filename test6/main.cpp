@@ -204,11 +204,16 @@ struct Socket : FdBase {
 
 template<typename NetCtxType>
 struct Connector : Socket<NetCtxType> {
-    bool connected{};
+    bool connected{}, hasEpollIn{};
     int OnEvents(uint32_t e) {
         if (e & EPOLLERR || e & EPOLLHUP) return -888;    // fatal error
-        if (e & EPOLLOUT) {
-            // todo
+        int err{};
+        socklen_t result_len = sizeof(err);
+        if (-1 == getsockopt(this->fd, SOL_SOCKET, SO_ERROR, &err, &result_len)) return -errno;
+        if (err) return -err;
+        connected = true;
+        if (e & EPOLLIN) {
+            hasEpollIn = true;
         }
         return 0;
     }
@@ -241,9 +246,9 @@ struct NetCtxBase : Epoll {
     }
 
     void SocketFill(Socket<Derived>& s, int fd_, IdxVerType iv_, sockaddr_in6 const* addr_ = {}) {
-        assert(s.fd == -1);
-        assert(!s.nc);
-        assert(s.iv.index == -1 && s.iv.version == 0);
+        xx_assert(s.fd == -1);
+        xx_assert(!s.nc);
+        xx_assert(s.iv.index == -1 && s.iv.version == 0);
         s.fd = fd_;
         s.nc = (Derived*)this;
         s.iv = iv_;
@@ -262,6 +267,24 @@ struct NetCtxBase : Epoll {
         sockets.Remove(s.iv);
     }
 
+    // sockets[s.iv] = move(t)
+    template<typename PeerType>
+    void SocketReplace(Socket<Derived>& s, xx::Shared<PeerType>&& t) {
+        xx_assert(s.fd != -1);
+        xx_assert(s.nc == this);
+        xx_assert(sockets[s.iv].pointer == &s);
+        xx_assert(t);
+        xx_assert(t->fd == -1);
+        xx_assert(t->iv.index == -1);
+        t->fd = s.fd;
+        t->nc = s.nc;
+        t->iv = s.iv;
+        t->addr = s.addr;
+        s.fd = -1;
+        s.nc = {};
+        s.iv = {};
+        sockets[t->iv] = std::move(t);
+    }
 
     // create listener & listen & return weak
     template<typename PeerType, class = std::enable_if_t<std::is_base_of_v<Socket<Derived>, PeerType>>>
@@ -333,18 +356,40 @@ struct NetCtxBase : Epoll {
         }
         else if (auto e = errno; e == EINPROGRESS) {        // r == -1
             auto secs = xx::NowSteadyEpochSeconds();
-            auto c = MakePeer<Connector<Derived>>(fd, addr).Lock();
+            auto w = MakePeer<Connector<Derived>>(fd, addr);
             while (true) {
                 CoYield;
-                if (c->connected) {
-                    // todo
+                if (!w) {   // fd error
+                    r1 = -88888;
+                    r2.Reset();
+                    CoReturn;
                 }
-                if (xx::NowSteadyEpochSeconds() - secs > timeoutSecs) { // timeout
-                    // todo
+                if (w->connected) { // success: replace
+                    auto hasEpollIn = w->hasEpollIn;
+                    r1 = 0;
+                    auto s = xx::Make<PeerType>();
+                    r2 = s;
+                    s->OnEvents__ = [](FdBase* s, uint32_t e) { return ((PeerType*)s)->OnEvents(e); };
+                    SocketReplace(*w, std::move(s));
+                    if (hasEpollIn) {
+                        if (int rr = r2->OnEvents(EPOLLIN)) {
+                            SocketDispose(*r2);  // log?
+                            r1 = rr;
+                            r2.Reset();
+                        }
+                    }
+                    CoReturn;
+                }
+                if (xx::NowSteadyEpochSeconds() - secs > timeoutSecs) { // timeout:
+                    SocketDispose(*w);
+                    r1 = -99999;
+                    r2.Reset();
+                    CoReturn;
                 }
             }
         } else {
-            // todo: return error
+            r1 = -errno;
+            r2.Reset();
         }
     }
 };
@@ -352,7 +397,7 @@ struct NetCtxBase : Epoll {
 
 template<typename NetCtxType, typename PeerType>
 int ListenerBase<NetCtxType, PeerType>::OnEvents(uint32_t e) {
-    assert(!(e & EPOLLERR || e & EPOLLHUP));
+    if (e & EPOLLERR || e & EPOLLHUP) return -888;    // fatal error
     auto HandleEvent = [this] {
         sockaddr_in6 addr{};
         int s = MakeAcceptSocketFD(this->fd, &addr);
@@ -429,13 +474,33 @@ struct TcpSocket : Socket<NetCtxType> {
 /*******************************************************************************************************/
 
 struct NetCtx : NetCtxBase<NetCtx> {};
-struct Peer : TcpSocket<NetCtx> {
-    int OnAccept() { xx::CoutN("Peer OnAccept. fd = ", fd," ip = ", addr); return 0; }
-    ~Peer() { xx::CoutN("Peer ~Peer. ip = ", addr); }
+
+struct ServerPeer : TcpSocket<NetCtx> {
+    int OnAccept() { xx::CoutN("ServerPeer OnAccept. fd = ", fd," ip = ", addr); return 0; }
+    ~ServerPeer() { xx::CoutN("ServerPeer ~ServerPeer. ip = ", addr); }
 
     xx::Data recv;  // received data container
     int OnEvents(uint32_t e) {
-        xx::CoutN("Peer OnEvents. fd = ", fd," ip = ", addr, ". e = ", e);
+        xx::CoutN("ServerPeer OnEvents. fd = ", fd," ip = ", addr, ". e = ", e);
+        if (e & EPOLLERR || e & EPOLLHUP) return -888;    // fatal error
+        if (e & EPOLLOUT) {
+            if (int r = Send()) return r;
+        }
+        if (e & EPOLLIN) {
+            if (int r = ReadData(fd, recv)) return r;
+            if (int r = Send(recv.buf, recv.len)) return r; // echo back
+        }
+        recv.Clear(/*true*/);   // recv.Shrink();
+        return 0;
+    }
+};
+
+struct ClientPeer : TcpSocket<NetCtx> {
+    ~ClientPeer() { xx::CoutN("ClientPeer ~ClientPeer."); }
+
+    xx::Data recv;  // received data container
+    int OnEvents(uint32_t e) {
+        xx::CoutN("ServerPeer OnEvents. fd = ", fd," ip = ", addr, ". e = ", e);
         if (e & EPOLLERR || e & EPOLLHUP) return -888;    // fatal error
         if (e & EPOLLOUT) {
             if (int r = Send()) return r;
@@ -452,23 +517,23 @@ struct Peer : TcpSocket<NetCtx> {
 
 int main() {
     NetCtx nc;
-    auto fd = nc.Listen<Peer>(12345);
+    auto fd = nc.Listen<ServerPeer>(12345);
     xx::CoutN("listener 12345 fd = ", fd);
-    fd = nc.Listen<Peer>(12333);
+    fd = nc.Listen<ServerPeer>(12333);
     xx::CoutN("listener 12333 fd = ", fd);
     nc.coros.Add([](NetCtx& nc)->xx::Coro{
         sockaddr_in6 addr{};
-        int r = FillAddress("127.0.0.1", 12333, addr);
-        xx_assert(r != -1);
-        xx::Weak<Peer> w;
+        xx_assert(-1 != FillAddress("127.0.0.1", 12333, addr));
     LabRetry:
-        CoAwait( nc.Connect(r, w, addr, 3000) );
-        if (auto p = w.Lock()) {
-            // todo
-        } else {
-            CoSleep(0.5s);
-            goto LabRetry;
-        }
+        xx::CoutN("********************************************************* begin connect.");
+        int r{};
+        xx::Weak<ClientPeer> w;
+        CoSleep(0.2s);
+        CoAwait( nc.Connect(r, w, addr, 3) );
+        if (!w) goto LabRetry;     // log r ?
+        xx::CoutN("********************************************************* connected.");
+    LabLogic:;
+        //p->Send((void*)"asdf", 4);
     }(nc));
     while(nc.Wait(1)) nc.coros();
     return 0;
