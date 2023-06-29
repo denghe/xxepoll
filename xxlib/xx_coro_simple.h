@@ -99,6 +99,57 @@ namespace xx {
             coros.Reserve(cap);
         }
     };
+
+    // check condition before Resume ( for life cycle manage )
+    template<typename T>
+    struct CorosEx {
+        CorosEx(CorosEx const&) = delete;
+        CorosEx& operator=(CorosEx const&) = delete;
+        CorosEx(CorosEx&&) = default;
+        CorosEx& operator=(CorosEx&&) = default;
+        explicit CorosEx(int32_t cap = 8) {
+            coros.Reserve(cap);
+        }
+
+        xx::ListLink<std::pair<T, Coro>, int32_t> coros;
+
+        template<typename U = T>
+        void Add(U&& t, Coro&& g) {
+            if (g) return;
+            coros.Emplace(std::forward<U>(t), std::move(g));
+        }
+
+        void Clear() {
+            coros.Clear();
+        }
+
+        int32_t operator()() {
+            int prev = -1, next{};
+            for (auto idx = coros.head; idx != -1;) {
+                auto& kv = coros[idx];
+                if (!kv.first || kv.second.Resume()) {
+                    next = coros.Remove(idx, prev);
+                } else {
+                    next = coros.Next(idx);
+                    prev = idx;
+                }
+                idx = next;
+            }
+            return coros.Count();
+        }
+
+        [[nodiscard]] int32_t Count() const {
+            return coros.Count();
+        }
+
+        [[nodiscard]] bool Empty() const {
+            return !coros.Count();
+        }
+
+        void Reserve(int32_t cap) {
+            coros.Reserve(cap);
+        }
+    };
 }
 
 /*
