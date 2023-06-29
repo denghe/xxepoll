@@ -50,9 +50,7 @@ int main() {
 
     auto secs = xx::NowSteadyEpochSeconds();
     double timePool{};
-    while(true) {
-        nc.Wait(1);
-        nc.coros();
+    while(nc.RunOnce(1)) {
         if (timePool += xx::NowSteadyEpochSeconds(secs); timePool > 1.) {
             timePool -= 1;
             xx::CoutN("counter = ", nc.counter);

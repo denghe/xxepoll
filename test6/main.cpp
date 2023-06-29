@@ -78,9 +78,7 @@ int main() {
 
     auto secs = xx::NowSteadyEpochSeconds();
     double timePool{};
-    while(nc.Wait(1)) {
-        nc.coros();
-        nc.corosEx();
+    while(nc.RunOnce(1)) {
         if (timePool += xx::NowSteadyEpochSeconds(secs); timePool > 1.) {
             timePool -= 1;
             xx::CoutN("counter = ", nc.counter);

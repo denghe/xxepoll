@@ -218,6 +218,10 @@ struct Socket : FdBase {
     NetCtxType* nc{};
     IdxVerType iv;
     sockaddr_in6 addr{};
+
+    void Go(xx::Coro&& c) {
+        ((NetCtxType*)this)->corosEx.Add( xx::WeakFromThis(this), std::move(c) );
+    }
 };
 
 template<typename NetCtxType>
@@ -255,6 +259,10 @@ struct NetCtxBase : Epoll {
     std::array<epoll_event, 4096> events{}; // tmp epoll events container
     xx::ListDoubleLink<xx::Shared<Socket<Derived>>, int, uint> sockets;    // listeners + accepted peers container
     IdxVerType lastListenerIV;  // for visit all sockets, skip listeners ( Foreach( []{}, Next( iv ) )
+
+    xx::Coros coros;
+    xx::CorosEx<xx::Weak<Socket<Derived>>> corosEx;
+
 
     NetCtxBase() {
         xx_assert(-1 != Create());
@@ -356,9 +364,12 @@ struct NetCtxBase : Epoll {
         return sockets.Count();
     }
 
-
-    xx::Coros coros;
-    xx::CorosEx<xx::Weak<Socket<Derived>>> corosEx;
+    int RunOnce(int timeoutMS) {
+        int r = Wait(timeoutMS);
+        r += coros();
+        r += corosEx();
+        return r;
+    }
 
     template<typename PeerType>
     xx::Coro Connect(int &r1, xx::Weak<PeerType> &r2, sockaddr_in6 const& addr, double timeoutSecs) {
@@ -411,6 +422,7 @@ struct NetCtxBase : Epoll {
             r2.Reset();
         }
     }
+
 };
 
 
