@@ -1,6 +1,6 @@
 ﻿#pragma once
-#ifndef XXEPOLL_TEST6_MAIN_H_
-#define XXEPOLL_TEST6_MAIN_H_
+#ifndef XXEPOLL_TEST7_MAIN_H_
+#define XXEPOLL_TEST7_MAIN_H_
 
 #include <xx_epoll_base.h>
 

@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <bit>
 #include <type_traits>
 #include <utility>
 #include <initializer_list>

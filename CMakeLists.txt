@@ -209,3 +209,28 @@ add_executable(${name} ${SRCS})
 target_precompile_headers(${name}
 		PRIVATE	$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/${SRCDIR}/main.h>
 		)
+
+########################################################################################
+
+set(name xxepoll_test9)
+set(SRCDIR test9)
+project(${name})
+
+include_directories(
+		xxlib
+		${SRCDIR}
+)
+
+set(SRCS)
+file(GLOB SRCS	#GLOB_RECURSE
+		xxlib/*.h
+		${SRCDIR}/*.cpp
+		${SRCDIR}/*.h
+		${SRCDIR}/*.hpp
+		${SRCDIR}/*.inc
+		)
+add_executable(${name} ${SRCS})
+
+target_precompile_headers(${name}
+		PRIVATE	$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_CURRENT_SOURCE_DIR}/${SRCDIR}/main.h>
+		)

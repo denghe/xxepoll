@@ -65,6 +65,12 @@ inline int FillAddress(std::string const &ip, int const &port, sockaddr_in6 &add
 
     return 0;
 }
+inline sockaddr_in6 ToAddress(std::string const &ip, int const &port) {
+    sockaddr_in6 rtv;
+    xx_assert(-1 != FillAddress(ip, port, rtv));
+    return rtv;
+}
+
 
 // for create listener
 template<bool enableReuseAddr = true>
@@ -110,15 +116,6 @@ template<bool enableReuseAddr = true>
     return fd == -1 ? -errno : fd;
 }
 
-//// for client socket
-//[[nodiscard]] int SetNonBlock(int fd) {
-//    int r = fcntl(fd, F_GETFL, 0);
-//    if (r == -1) return -errno;
-//    r = fcntl(fd, F_SETFL, r | O_NONBLOCK);
-//    if (r == -1) return -errno;
-//    return 0;
-//}
-
 // read all data from fd. append to d
 // success: return 0
 // < 0 == -errno, need close fd
@@ -157,6 +154,44 @@ template<size_t reserveLen = 1024 * 256, size_t maxLen = 0/*1024 * 1024 * 4*/>
     } else {
         if (auto e = errno; e == EAGAIN || e == EWOULDBLOCK) return {(char*)buf_ - buf + n, true }; // success
         else return {-e, false };   // error
+    }
+}
+
+template<typename LenType = uint32_t, size_t sizeofLen = 4>
+LenType ReadPackageLen(uint8_t const* buf) {
+    static_assert(sizeofLen >= 1 && sizeofLen <= sizeof(LenType));
+    if constexpr (std::endian::native == std::endian::little) {
+        LenType rtv{};
+        memcpy(&rtv, buf, sizeofLen);
+        return rtv;
+    } else {
+        LenType rtv = buf[0];
+        if constexpr (sizeofLen >= 2) rtv += (LenType) buf[1] << 8;
+        if constexpr (sizeofLen >= 3) rtv += (LenType) buf[2] << 16;
+        if constexpr (sizeofLen >= 4) rtv += (LenType) buf[3] << 24;
+        if constexpr (sizeofLen >= 5) rtv += (LenType) buf[4] << 32;
+        if constexpr (sizeofLen >= 6) rtv += (LenType) buf[5] << 40;
+        if constexpr (sizeofLen >= 7) rtv += (LenType) buf[6] << 48;
+        if constexpr (sizeofLen >= 8) rtv += (LenType) buf[7] << 56;
+        return rtv;
+    }
+}
+
+template<typename LenType = uint32_t, size_t sizeofLen = 4>
+void WritePackageLen(uint8_t* buf, LenType v) {
+    static_assert(sizeofLen >= 1 && sizeofLen <= sizeof(LenType));
+    if constexpr (std::endian::native == std::endian::little) {
+        memcpy(buf, &v, sizeofLen);
+    } else {
+        std::make_unsigned<LenType> u = v;
+        buf[0] = (uint8_t) u;
+        if constexpr (sizeofLen >= 2) buf[1] = u >> 8;
+        if constexpr (sizeofLen >= 3) buf[2] = u >> 16;
+        if constexpr (sizeofLen >= 4) buf[3] = u >> 24;
+        if constexpr (sizeofLen >= 5) buf[4] = u >> 32;
+        if constexpr (sizeofLen >= 6) buf[5] = u >> 40;
+        if constexpr (sizeofLen >= 7) buf[6] = u >> 48;
+        if constexpr (sizeofLen >= 8) buf[7] = u >> 56;
     }
 }
 
@@ -204,11 +239,6 @@ struct Epoll : FdBase {
 /*******************************************************************************************************/
 /*******************************************************************************************************/
 
-
-template<typename T> concept Has_OnAccept = requires(T t) { t.OnAccept(); };
-template<typename T> concept Has_OnReceive = requires(T t) { t.OnReceive(); };
-template<typename T> concept Has_OnClose = requires(T t) { t.OnClose(); };
-
 using IdxVerType = xx::ListDoubleLinkIndexAndVersion<int, uint>;    // int + uint  for store to  epoll int64 user data
 
 template<typename NetCtxType>
@@ -250,6 +280,7 @@ struct ListenerBase : Socket<NetCtxType> {
     int OnEvents(uint32_t e);
 };
 
+template<typename T> concept Has_OnAccept = requires(T t) { t.OnAccept(); };
 
 template<typename Derived>
 struct NetCtxBase : Epoll {
@@ -263,6 +294,9 @@ struct NetCtxBase : Epoll {
     xx::Coros coros;
     xx::CorosEx<xx::Weak<Socket<Derived>>> corosEx;
 
+    void Go(xx::Coro&& c) {
+        coros.Add(std::move(c));
+    }
 
     NetCtxBase() {
         xx_assert(-1 != Create());
@@ -496,6 +530,40 @@ struct TcpSocket : Socket<NetCtxType> {
             }
         } else {
             sents.Emplace(std::forward<DataType>(d));
+        }
+        return 0;
+    }
+};
+
+// for combine & split package data
+// Derived interface: int OnEventsPkg(xx::Data_r dr)
+template<typename Derived, typename LenType = uint32_t, size_t sizeofLen = 4, bool lenContainSelf = false, size_t reserveLen = 1024 * 256, size_t maxLen = 0>
+struct PartialCodes_OnEventsPkg {
+    xx::Data recv;
+    int OnEvents(uint32_t e) {
+        xx::CoutN("e = ", e);
+        if (e & EPOLLERR || e & EPOLLHUP) return -888;
+        if (e & EPOLLOUT) {
+            if (int r = ((Derived*)this)->Send()) return r;
+        }
+        if (e & EPOLLIN) {
+            if (int r = ReadData<reserveLen, maxLen>(((Derived*)this)->fd, recv)) return r;
+
+            size_t offset = 0;
+            while (offset + sizeofLen <= recv.len) {
+                auto len = ReadPackageLen<LenType, sizeofLen>(recv.buf + offset);
+                if constexpr(maxLen) {
+                    if (len > maxLen) return -777;
+                }
+                if constexpr (!lenContainSelf) {
+                    len += sizeofLen;
+                }
+                xx::CoutN("len = ", len);
+                if (offset + len > recv.len) break; // incomplete
+                if (int r = ((Derived *) this)->OnEventsPkg({recv.buf + offset, len, sizeofLen})) return r;
+                offset += len;
+            }
+            recv.RemoveFront(offset);
         }
         return 0;
     }
