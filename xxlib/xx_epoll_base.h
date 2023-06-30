@@ -541,7 +541,7 @@ template<typename Derived, typename LenType = uint32_t, size_t sizeofLen = 4, bo
 struct PartialCodes_OnEventsPkg {
     xx::Data recv;
     int OnEvents(uint32_t e) {
-        xx::CoutN("e = ", e);
+        xx::CoutN("fd = ", ((Derived*)this)->fd, " e = ", e);
         if (e & EPOLLERR || e & EPOLLHUP) return -888;
         if (e & EPOLLOUT) {
             if (int r = ((Derived*)this)->Send()) return r;
@@ -558,7 +558,6 @@ struct PartialCodes_OnEventsPkg {
                 if constexpr (!lenContainSelf) {
                     len += sizeofLen;
                 }
-                xx::CoutN("len = ", len);
                 if (offset + len > recv.len) break; // incomplete
                 if (int r = ((Derived *) this)->OnEventsPkg({recv.buf + offset, len, sizeofLen})) return r;
                 offset += len;

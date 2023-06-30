@@ -4,27 +4,32 @@ struct NetCtx : NetCtxBase<NetCtx> {};
 
 // package define: header len = 1 byte, max = 256
 template<typename Derived>
-using OnEventsPkg = PartialCodes_OnEventsPkg<Derived, uint8_t, 1, true, 256, 256>;
+using OnEventsPkg = PartialCodes_OnEventsPkg<Derived, uint8_t, 1, false, 256, 255>;
 
 struct ServerPeer : TcpSocket<NetCtx>, OnEventsPkg<ServerPeer> {
     ~ServerPeer() { xx::CoutN("~ServerPeer"); }
     int OnEventsPkg(xx::Data_r dr) {
+        xx::CoutN("OnEventsPkg fd = ", fd);
         Send(dr);   // echo
         return 0;
     }
 };
 
-struct ClientPeer : TcpSocket<NetCtx>, OnEventsPkg<ServerPeer> {
+struct ClientPeer : TcpSocket<NetCtx>, OnEventsPkg<ClientPeer> {
     ~ClientPeer() { xx::CoutN("~ClientPeer"); }
     int OnEventsPkg(xx::Data_r dr) {
         xx::CoutN("recv dr = ", dr);
         return 0;
     }
-    void BeginLogic() { Go(BeginLogic_()); }
+    void BeginLogic() {
+        Go(BeginLogic_());
+        //nc->Go(BeginLogic_());
+    }
     xx::Coro BeginLogic_() {
         auto d = xx::Data::From({3, 1, 2, 3});
         for(size_t i = 0; i < d.len; ++i) {
             Send(&d[i], 1);
+            xx::CoutN("i = ", i);
             CoYield;
         }
         xx::CoutN("send finished.");
@@ -47,6 +52,10 @@ int main() {
         }
     }(nc));
 
-    while(nc.RunOnce(1));
+    while(nc.RunOnce(1)) {
+        xx::CoutN("coros.Count() = ", nc.coros.Count());
+        xx::CoutN("corosEx.Count() = ", nc.corosEx.Count());
+        std::this_thread::sleep_for(1s);
+    }
     return 0;
 }
