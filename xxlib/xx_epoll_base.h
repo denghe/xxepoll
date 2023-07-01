@@ -250,7 +250,7 @@ struct Socket : FdBase {
     sockaddr_in6 addr{};
 
     void Go(xx::Coro&& c) {
-        ((NetCtxType*)this)->corosEx.Add( xx::WeakFromThis(this), std::move(c) );
+        nc->corosEx.Add( xx::WeakFromThis(this), std::move(c) );
     }
 };
 
@@ -541,7 +541,7 @@ template<typename Derived, typename LenType = uint32_t, size_t sizeofLen = 4, bo
 struct PartialCodes_OnEventsPkg {
     xx::Data recv;
     int OnEvents(uint32_t e) {
-        xx::CoutN("fd = ", ((Derived*)this)->fd, " e = ", e);
+        //xx::CoutN("fd = ", ((Derived*)this)->fd, " e = ", e);
         if (e & EPOLLERR || e & EPOLLHUP) return -888;
         if (e & EPOLLOUT) {
             if (int r = ((Derived*)this)->Send()) return r;

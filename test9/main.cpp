@@ -7,23 +7,19 @@ template<typename Derived>
 using OnEventsPkg = PartialCodes_OnEventsPkg<Derived, uint8_t, 1, false, 256, 255>;
 
 struct ServerPeer : TcpSocket<NetCtx>, OnEventsPkg<ServerPeer> {
-    ~ServerPeer() { xx::CoutN("~ServerPeer"); }
     int OnEventsPkg(xx::Data_r dr) {
-        xx::CoutN("OnEventsPkg fd = ", fd);
         Send(dr);   // echo
         return 0;
     }
 };
 
 struct ClientPeer : TcpSocket<NetCtx>, OnEventsPkg<ClientPeer> {
-    ~ClientPeer() { xx::CoutN("~ClientPeer"); }
     int OnEventsPkg(xx::Data_r dr) {
         xx::CoutN("recv dr = ", dr);
-        return 0;
+        return 1;   // close
     }
     void BeginLogic() {
         Go(BeginLogic_());
-        //nc->Go(BeginLogic_());
     }
     xx::Coro BeginLogic_() {
         auto d = xx::Data::From({3, 1, 2, 3});
@@ -51,10 +47,7 @@ int main() {
             }
         }
     }(nc));
-
-    while(nc.RunOnce(1)) {
-        xx::CoutN("coros.Count() = ", nc.coros.Count());
-        xx::CoutN("corosEx.Count() = ", nc.corosEx.Count());
+    while(nc.RunOnce(1) > 1) {
         std::this_thread::sleep_for(1s);
     }
     return 0;
