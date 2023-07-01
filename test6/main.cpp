@@ -49,6 +49,7 @@ int main() {
             w->Send((void *) "a", 1);   // send first data
         }(nc));
     }
+
     double secs = xx::NowSteadyEpochSeconds(), timePool{};
     while (nc.RunOnce(1)) {
         if (timePool += xx::NowSteadyEpochSeconds(secs); timePool > 1.) {

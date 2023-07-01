@@ -6,23 +6,17 @@ struct NetCtx : xx::net::NetCtxBase<NetCtx> {
     int64_t counter{};
 };
 
-struct ServerPeer : xx::net::TcpSocket<NetCtx> {
-    int OnAccept() { xx::CoutN("ServerPeer OnAccept. fd = ", fd," ip = ", addr); return 0; }
+template<typename Derived>
+struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Base<Derived, 1024> {};
+
+struct ServerPeer : PeerBase<ServerPeer> {
     ~ServerPeer() { xx::CoutN("ServerPeer ~ServerPeer. ip = ", addr); }
 
-    xx::Data recv;  // received data container
-    int OnEvents(uint32_t e) {
-        //xx::CoutN("ServerPeer OnEvents. fd = ", fd," ip = ", addr, ". e = ", e);
-        if (e & EPOLLERR || e & EPOLLHUP) return -888;    // fatal error
-        if (e & EPOLLOUT) {
-            if (int r = Send()) return r;
-        }
-        if (e & EPOLLIN) {
-            if (int r = xx::net::ReadData(fd, recv)) return r;
-            nc->counter++;
-            if (int r = Send(recv.buf, recv.len)) return r; // echo back
-        }
-        recv.Clear(/*true*/);   // recv.Shrink();
+    int OnAccept() { xx::CoutN("ServerPeer OnAccept. fd = ", fd," ip = ", addr); return 0; }
+    int OnEventsIn() {
+        ++nc->counter;
+        if (int r = Send(recv.buf, recv.len)) return r; // echo back
+        recv.Clear();
         return 0;
     }
 };
