@@ -14,6 +14,8 @@ struct ClientPeer : PeerBase<ClientPeer> {
 
     int OnEventsIn() {
         xx_assert(recv.len == 1);
+        recv.Clear();
+        ++nc->counter;
         return Send((void*)"a", 1); // repeat send
     }
 };
@@ -24,7 +26,7 @@ int main() {
     for (int i = 0; i < 6; ++i) {
         nc.AddCoro([](NetCtx& nc)->xx::Coro{
             sockaddr_in6 addr{};
-            xx_assert(-1 != xx::net::FillAddress("127.0.0.1", 12333, addr));
+            xx_assert(-1 != xx::net::FillAddress("127.0.0.1", 55555, addr));
             int r{};
             xx::Weak<ClientPeer> w;
             LabRetry:

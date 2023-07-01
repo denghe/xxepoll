@@ -26,6 +26,7 @@ struct ClientPeer : PeerBase<ClientPeer> {
 
     int OnEventsIn() {
         xx_assert(recv.len == 1);
+        recv.Clear();
         return Send((void*)"a", 1); // repeat send
     }
 };
