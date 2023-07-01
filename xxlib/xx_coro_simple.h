@@ -42,7 +42,7 @@ namespace xx {
     };
 
 
-#define CoType xx::Coro
+#define CoType ::xx::Coro
 #define CoYield co_yield 0
 #define CoReturn co_return
 #define CoAwait( coType ) { auto&& c = coType; while(!c) { CoYield; c(); } }
@@ -56,13 +56,13 @@ namespace xx {
     struct Coros {
         Coros(Coros const&) = delete;
         Coros& operator=(Coros const&) = delete;
-        Coros(Coros&&) = default;
-        Coros& operator=(Coros&&) = default;
+        Coros(Coros&&) noexcept = default;
+        Coros& operator=(Coros&&) noexcept = default;
         explicit Coros(int32_t cap = 8) {
             coros.Reserve(cap);
         }
 
-        xx::ListLink<Coro, int32_t> coros;
+        ListLink<Coro, int32_t> coros;
 
         void Add(Coro&& g) {
             if (g) return;
@@ -105,13 +105,13 @@ namespace xx {
     struct CorosEx {
         CorosEx(CorosEx const&) = delete;
         CorosEx& operator=(CorosEx const&) = delete;
-        CorosEx(CorosEx&&) = default;
-        CorosEx& operator=(CorosEx&&) = default;
+        CorosEx(CorosEx&&) noexcept = default;
+        CorosEx& operator=(CorosEx&&) noexcept = default;
         explicit CorosEx(int32_t cap = 8) {
             coros.Reserve(cap);
         }
 
-        xx::ListLink<std::pair<T, Coro>, int32_t> coros;
+        ListLink<std::pair<T, Coro>, int32_t> coros;
 
         template<typename U = T>
         void Add(U&& t, Coro&& g) {

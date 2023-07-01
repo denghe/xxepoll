@@ -589,6 +589,7 @@ namespace xx::net {
                 offset += len;
             }
             recv.RemoveFront(offset);
+            return 0;
         }
     };
 }
