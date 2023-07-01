@@ -2,11 +2,11 @@
 
 #include "main.h"
 
-struct NetCtx : NetCtxBase<NetCtx> {
+struct NetCtx : xx::net::NetCtxBase<NetCtx> {
     int64_t counter{};
 };
 
-struct ClientPeer : TcpSocket<NetCtx> {
+struct ClientPeer : xx::net::TcpSocket<NetCtx> {
     ~ClientPeer() { xx::CoutN("ClientPeer ~ClientPeer."); }
 
     xx::Data recv;  // received data container
@@ -17,7 +17,7 @@ struct ClientPeer : TcpSocket<NetCtx> {
             if (int r = Send()) return r;
         }
         if (e & EPOLLIN) {
-            if (int r = ReadData(fd, recv)) return r;
+            if (int r = xx::net::ReadData(fd, recv)) return r;
             nc->counter++;
             if (int r = Send(recv.buf, recv.len)) return r; // echo back
         }
@@ -32,7 +32,7 @@ int main() {
     for (int i = 0; i < 6; ++i) {
         nc.coros.Add([](NetCtx& nc)->xx::Coro{
             sockaddr_in6 addr{};
-            xx_assert(-1 != FillAddress("127.0.0.1", 55555, addr));
+            xx_assert(-1 != xx::net::FillAddress("127.0.0.1", 55555, addr));
         LabRetry:
             xx::CoutN("begin connect.");
             int r{};

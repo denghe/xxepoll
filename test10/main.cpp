@@ -2,7 +2,7 @@
 
 #include "main.h"
 
-struct NC : NetCtxBase<NC> {};
+struct NC : xx::net::NetCtxBase<NC> {};
 
 
 int main() {

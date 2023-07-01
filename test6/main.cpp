@@ -2,83 +2,55 @@
 
 #include "main.h"
 
-struct NetCtx : NetCtxBase<NetCtx> {
+struct NetCtx : xx::net::NetCtxBase<NetCtx> {
     size_t counter{};
 };
 
-struct ServerPeer : TcpSocket<NetCtx> {
-    int OnAccept() { xx::CoutN("ServerPeer OnAccept. fd = ", fd," ip = ", addr); return 0; }
+template<typename Derived>
+struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Base<Derived, 1024> {};
+
+struct ServerPeer : PeerBase<ServerPeer> {
     ~ServerPeer() { xx::CoutN("ServerPeer ~ServerPeer. ip = ", addr); }
 
-    xx::Data recv;  // received data container
-    int OnEvents(uint32_t e) {
-        //xx::CoutN("ServerPeer OnEvents. fd = ", fd," ip = ", addr, ". e = ", e);
-        if (e & EPOLLERR || e & EPOLLHUP) return -888;    // fatal error
-        if (e & EPOLLOUT) {
-            if (int r = Send()) return r;
-        }
-        if (e & EPOLLIN) {
-            if (int r = ReadData(fd, recv)) return r;
-            nc->counter++;
-            if (int r = Send(recv.buf, recv.len)) return r; // echo back
-        }
-        recv.Clear(/*true*/);   // recv.Shrink();
+    int OnAccept() { xx::CoutN("ServerPeer OnAccept. fd = ", fd," ip = ", addr); return 0; }
+    int OnEventsIn() {
+        ++nc->counter;
+        if (int r = Send(recv.buf, recv.len)) return r; // echo back
+        recv.Clear();
         return 0;
     }
 };
 
-struct ClientPeer : TcpSocket<NetCtx> {
+struct ClientPeer : PeerBase<ClientPeer> {
     ~ClientPeer() { xx::CoutN("ClientPeer ~ClientPeer."); }
 
-    xx::Data recv;  // received data container
-    int OnEvents(uint32_t e) {
-        //xx::CoutN("ServerPeer OnEvents. fd = ", fd," ip = ", addr, ". e = ", e);
-        if (e & EPOLLERR || e & EPOLLHUP) return -888;    // fatal error
-        if (e & EPOLLOUT) {
-            if (int r = Send()) return r;
-        }
-        if (e & EPOLLIN) {
-            if (int r = ReadData(fd, recv)) return r;
-            xx_assert(recv.len == 1);
-            if (int r = Send((void*)"a", 1)) return r; // repeat send
-        }
-        recv.Clear(/*true*/);   // recv.Shrink();
-        return 0;
+    int OnEventsIn() {
+        xx_assert(recv.len == 1);
+        return Send((void*)"a", 1); // repeat send
     }
 };
-
 
 int main() {
     NetCtx nc;
-    auto fd = nc.Listen<ServerPeer>(12345);
-    xx::CoutN("listener 12345 fd = ", fd);
-    fd = nc.Listen<ServerPeer>(12333);
-    xx::CoutN("listener 12333 fd = ", fd);
+    nc.Listen<ServerPeer>(12333);
 
     for (int i = 0; i < 2; ++i) {
-
-        nc.coros.Add([](NetCtx& nc)->xx::Coro{
+        nc.AddCoro([](NetCtx& nc)->xx::Coro{
             sockaddr_in6 addr{};
-            xx_assert(-1 != FillAddress("127.0.0.1", 12333, addr));
-        LabRetry:
-            xx::CoutN("********************************************************* begin connect.");
+            xx_assert(-1 != xx::net::FillAddress("127.0.0.1", 12333, addr));
             int r{};
             xx::Weak<ClientPeer> w;
+        LabRetry:
+            xx::CoutN("********************************************************* begin connect.");
             CoSleep(0.2s);
             CoAwait( nc.Connect(r, w, addr, 3) );
             if (!w) goto LabRetry;     // log r ?
             xx::CoutN("********************************************************* connected.");
-        LabLogic:
-            if (w) {
-                w->Send((void *) "a", 1);   // send first
-            }
+            w->Send((void *) "a", 1);   // send first data
         }(nc));
-
     }
-
-    auto secs = xx::NowSteadyEpochSeconds();
-    double timePool{};
-    while(nc.RunOnce(1)) {
+    double secs = xx::NowSteadyEpochSeconds(), timePool{};
+    while (nc.RunOnce(1)) {
         if (timePool += xx::NowSteadyEpochSeconds(secs); timePool > 1.) {
             timePool -= 1;
             xx::CoutN("counter = ", nc.counter);

@@ -2,11 +2,11 @@
 
 #include "main.h"
 
-struct NetCtx : NetCtxBase<NetCtx> {
+struct NetCtx : xx::net::NetCtxBase<NetCtx> {
     int64_t counter{};
 };
 
-struct ServerPeer : TcpSocket<NetCtx> {
+struct ServerPeer : xx::net::TcpSocket<NetCtx> {
     int OnAccept() { xx::CoutN("ServerPeer OnAccept. fd = ", fd," ip = ", addr); return 0; }
     ~ServerPeer() { xx::CoutN("ServerPeer ~ServerPeer. ip = ", addr); }
 
@@ -18,7 +18,7 @@ struct ServerPeer : TcpSocket<NetCtx> {
             if (int r = Send()) return r;
         }
         if (e & EPOLLIN) {
-            if (int r = ReadData(fd, recv)) return r;
+            if (int r = xx::net::ReadData(fd, recv)) return r;
             nc->counter++;
             if (int r = Send(recv.buf, recv.len)) return r; // echo back
         }
