@@ -304,7 +304,7 @@ namespace xx::net {
         IdxVerType lastListenerIV;  // for visit all sockets, skip listeners ( Foreach( []{}, Next( iv ) )
 
         xx::Coros coros;
-        xx::CorosEx<xx::Weak<Socket<Derived>>> corosEx;
+        xx::CorosByCond<xx::Weak<Socket<Derived>>> corosEx;
 
         void AddCoro(xx::Coro &&c) {
             coros.Add(std::move(c));

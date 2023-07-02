@@ -1,6 +1,4 @@
-﻿// test rpc like based on pkg
-
-// todo: CoroCache
+﻿// FuncCache
 
 #include "main.h"
 

@@ -31,7 +31,7 @@ namespace xx {
 		ListDoubleLink() = default;
 		ListDoubleLink(ListDoubleLink const&) = delete;
 		ListDoubleLink& operator=(ListDoubleLink const&) = delete;
-		ListDoubleLink(ListDoubleLink&& o) {
+		ListDoubleLink(ListDoubleLink&& o) noexcept {
 			buf = o.buf;
 			cap = o.cap;
 			len = o.len;
@@ -47,7 +47,7 @@ namespace xx {
 			o.freeHead = -1;
 			o.freeCount = {};
 		}
-		ListDoubleLink& operator=(ListDoubleLink&& o) {
+		ListDoubleLink& operator=(ListDoubleLink&& o) noexcept {
 			std::swap(buf, o.buf);
 			std::swap(cap, o.cap);
 			std::swap(len, o.len);
@@ -284,7 +284,7 @@ namespace xx {
 			return len - freeCount;
 		}
 
-		bool Empty() const {
+		[[nodiscard]] bool Empty() const {
 			return len - freeCount == 0;
 		}
 

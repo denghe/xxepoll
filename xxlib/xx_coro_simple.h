@@ -4,50 +4,45 @@
 
 #include "xx_listlink.h"
 
-namespace cxx14 {}
 namespace xx {
-    using namespace std;
-#if __has_include(<coroutine>)
-#else
-    using namespace std::experimental;
-    using namespace cxx14;
-#endif
-
-    struct Coro {
+    template<typename R> struct CoroBase { R r; };
+    template<> struct CoroBase<void> {};
+    template<typename R>
+    struct Coro_ {
         struct promise_type;
-        using H = coroutine_handle<promise_type>;
+        using H = std::coroutine_handle<promise_type>;
         struct promise_type {
-            Coro get_return_object() { return { H::from_promise(*this) }; }
-            suspend_never initial_suspend() { return {}; }
-            suspend_always final_suspend() noexcept(true) { return {}; }
-            suspend_always yield_value(int v) { return {}; }
+            Coro_ get_return_object() { return { H::from_promise(*this) }; }
+            std::suspend_never initial_suspend() { return {}; }
+            std::suspend_always final_suspend() noexcept(true) { return {}; }
+            template<typename U>
+            std::suspend_always yield_value(U&& v) { if constexpr(!std::is_void_v<R>) this->r = std::forward<U>(v); return {}; }
             void return_void() {}
             void unhandled_exception() { std::rethrow_exception(std::current_exception()); }
         };
 
-        Coro() : h(nullptr) {}
-        Coro(H h) : h(h) {}
-        ~Coro() { if (h) h.destroy(); }
-        Coro(Coro const& o) = delete;
-        Coro& operator=(Coro const&) = delete;
-        Coro(Coro&& o) noexcept : h(o.h) { o.h = nullptr; };
-        Coro& operator=(Coro&& o) noexcept { std::swap(h, o.h); return *this; };
+        Coro_() : h(nullptr) {}
+        Coro_(H h) : h(h) {}
+        ~Coro_() { if (h) h.destroy(); }
+        Coro_(Coro_ const& o) = delete;
+        Coro_& operator=(Coro_ const&) = delete;
+        Coro_(Coro_&& o) noexcept : h(o.h) { o.h = nullptr; };
+        Coro_& operator=(Coro_&& o) noexcept { std::swap(h, o.h); return *this; };
 
         void operator()() { h.resume(); }
-        operator bool() { return h.done(); }
+        operator bool() const { return h.done(); }
         bool Resume() { h.resume(); return h.done(); }
 
     protected:
         H h;
     };
+    using Coro = Coro_<void>;
 
 
-#define CoType ::xx::Coro
 #define CoYield co_yield 0
 #define CoReturn co_return
 #define CoAwait( coType ) { auto&& c = coType; while(!c) { CoYield; c(); } }
 #define CoSleep( duration ) { auto tp = std::chrono::steady_clock::now() + duration; do { CoYield; } while (std::chrono::steady_clock::now() < tp); }
-#define CoDelay( times ) { for (int _ = 0; _ < times; ++_) CoYield; }
 
 
     template<>
@@ -102,12 +97,12 @@ namespace xx {
 
     // check condition before Resume ( for life cycle manage )
     template<typename T>
-    struct CorosEx {
-        CorosEx(CorosEx const&) = delete;
-        CorosEx& operator=(CorosEx const&) = delete;
-        CorosEx(CorosEx&&) noexcept = default;
-        CorosEx& operator=(CorosEx&&) noexcept = default;
-        explicit CorosEx(int32_t cap = 8) {
+    struct CorosByCond {
+        CorosByCond(CorosByCond const&) = delete;
+        CorosByCond& operator=(CorosByCond const&) = delete;
+        CorosByCond(CorosByCond&&) noexcept = default;
+        CorosByCond& operator=(CorosByCond&&) noexcept = default;
+        explicit CorosByCond(int32_t cap = 8) {
             coros.Reserve(cap);
         }
 
