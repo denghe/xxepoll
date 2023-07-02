@@ -259,7 +259,7 @@ namespace xx::net {
         sockaddr_in6 addr{};
 
         void AddCoro(xx::Coro &&c) {
-            nc->corosEx.Add(xx::WeakFromThis(this), std::move(c));
+            nc->condCoros.Add(xx::WeakFromThis(this), std::move(c));
         }
     };
 
@@ -304,7 +304,7 @@ namespace xx::net {
         IdxVerType lastListenerIV;  // for visit all sockets, skip listeners ( Foreach( []{}, Next( iv ) )
 
         xx::Coros coros;
-        xx::CorosByCond<xx::Weak<Socket<Derived>>> corosEx;
+        xx::CondCoros<xx::Weak<Socket<Derived>>> condCoros;
 
         void AddCoro(xx::Coro &&c) {
             coros.Add(std::move(c));
@@ -414,7 +414,7 @@ namespace xx::net {
         int RunOnce(int timeoutMS) {
             int r = Wait(timeoutMS);
             r += coros();
-            r += corosEx();
+            r += condCoros();
             return r;
         }
 

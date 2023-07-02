@@ -4,11 +4,10 @@
 
 namespace xx {
 
-    template<typename DataType, typename KeyType, int timeoutSecs, ABComparer<DataType, KeyType> Comparer>
+    template<typename KeyType, typename DataType, int timeoutSecs = 15>
     struct FuncCache {
-        using Callback = std::function<int(DataType const&)>;
-        using Value = std::tuple<KeyType, double, Callback>;
-        xx::List<Value, int> values;
+        using Callback = std::function<int(DataType)>;
+        xx::List<std::tuple<KeyType, double, Callback>, int> values;
 
         // CB example: [](DataType const& d)->int { ... }
         template<typename K, typename CB, class = std::enable_if_t<std::convertible_to<CB, Callback>>>
@@ -17,14 +16,15 @@ namespace xx {
                 std::forward<K>(key), xx::NowSteadyEpochSeconds() + timeoutSecs, std::forward<CB>(cb) } );
         }
 
-        // handle data
+        // match key & call func
         // null: dismatch     0: success      !0: error ( need close ? )
-        std::optional<int> Call(DataType const& d) {
+        template<typename DT, class = std::enable_if_t<std::convertible_to<DT, DataType>>>
+        std::optional<int> Trigger(KeyType const& k, DT&& d) {
             if (values.Empty()) return false;
             for (int i = values.len - 1; i >= 0; --i) {
                 auto &tup = values[i];
-                if (Comparer(d, std::get<KeyType>(tup))) {
-                    if (int r = std::get<Callback>(tup)(d)) return r;
+                if (k == std::get<KeyType>(tup)) {
+                    if (int r = std::get<Callback>(tup)(std::forward<DT>(d))) return r;
                     values.SwapRemoveAt(i);
                     return 0;
                 }
@@ -48,7 +48,7 @@ namespace xx {
         }
 
         // all timeout
-        ~FuncCache() {
+        void AllTimeout() {
             if (values.Empty()) return;
             for (int i = values.len - 1; i >= 0; --i) {
                 std::get<Callback>(values[i])({});
@@ -57,17 +57,13 @@ namespace xx {
     };
 }
 
-bool DataIdComparor(xx::Data_r const& dr, uint8_t const& id) {
-    return dr[dr.offset] == id;
-}
-
 int main() {
-    xx::FuncCache<xx::Data_r, uint8_t, 2, DataIdComparor> fc;
-    fc.Add(1, [](xx::Data_r const& d)->int {
+    xx::FuncCache<uint8_t, xx::Data_r, 2> fc;
+    fc.Add(1, [](xx::Data_r d)->int {
         xx::CoutN("1 d = ", d);
         return 0;
     });
-    fc.Add(5, [](xx::Data_r const& d)->int {
+    fc.Add(5, [](xx::Data_r d)->int {
         xx::CoutN("5 d = ", d);
         return 0;
     });
@@ -75,7 +71,7 @@ int main() {
     fc.Update();
     xx::CoutN("update. fc.values.len == ", fc.values.len);
     auto d = xx::Data::From({2,1,2});
-    fc.Call({d.buf, d.len, 1});
+    fc.Trigger(1, d);
     xx::CoutN("call. fc.values.len == ", fc.values.len);
     Sleep(3000);
     fc.Update();

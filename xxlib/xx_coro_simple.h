@@ -2,16 +2,17 @@
 
 // important: only support static function or lambda !!!  COPY data from arguments !!! do not ref !!!
 
+#include "xx_typetraits.h"
+#include "xx_time.h"
+#include "xx_list.h"
 #include "xx_listlink.h"
 
 namespace xx {
-    template<typename R> struct CoroBase { R r; };
-    template<> struct CoroBase<void> {};
+    template<typename R> struct CoroBase_promise_type { R r; };
+    template<> struct CoroBase_promise_type<void> {};
     template<typename R>
     struct Coro_ {
-        struct promise_type;
-        using H = std::coroutine_handle<promise_type>;
-        struct promise_type {
+        struct promise_type : CoroBase_promise_type<R> {
             Coro_ get_return_object() { return { H::from_promise(*this) }; }
             std::suspend_never initial_suspend() { return {}; }
             std::suspend_always final_suspend() noexcept(true) { return {}; }
@@ -20,7 +21,8 @@ namespace xx {
             void return_void() {}
             void unhandled_exception() { std::rethrow_exception(std::current_exception()); }
         };
-
+        using H = std::coroutine_handle<promise_type>;
+        H h;
         Coro_() : h(nullptr) {}
         Coro_(H h) : h(h) {}
         ~Coro_() { if (h) h.destroy(); }
@@ -32,14 +34,11 @@ namespace xx {
         void operator()() { h.resume(); }
         operator bool() const { return h.done(); }
         bool Resume() { h.resume(); return h.done(); }
-
-    protected:
-        H h;
     };
     using Coro = Coro_<void>;
 
 
-#define CoYield co_yield 0
+#define CoYield co_yield std::monostate()
 #define CoReturn co_return
 #define CoAwait( coType ) { auto&& c = coType; while(!c) { CoYield; c(); } }
 #define CoSleep( duration ) { auto tp = std::chrono::steady_clock::now() + duration; do { CoYield; } while (std::chrono::steady_clock::now() < tp); }
@@ -47,104 +46,170 @@ namespace xx {
 
     template<>
     struct IsPod<Coro> : std::true_type {};
+    template<typename T>
+    struct IsPod<Coro_<T>> : IsPod<T> {};
 
-    struct Coros {
-        Coros(Coros const&) = delete;
-        Coros& operator=(Coros const&) = delete;
-        Coros(Coros&&) noexcept = default;
-        Coros& operator=(Coros&&) noexcept = default;
-        explicit Coros(int32_t cap = 8) {
-            coros.Reserve(cap);
+    /***********************************************************************************************************/
+    /***********************************************************************************************************/
+
+    template<typename T> struct CorosBase {
+        ListLink<std::pair<T, Coro>, int32_t> coros;
+    };
+    template<> struct CorosBase<void> {
+        ListLink<Coro, int32_t> coros;
+    };
+
+    template<typename T>
+    struct Coros_ : CorosBase<T> {
+        Coros_(Coros_ const&) = delete;
+        Coros_& operator=(Coros_ const&) = delete;
+        Coros_(Coros_&&) noexcept = default;
+        Coros_& operator=(Coros_&&) noexcept = default;
+        explicit Coros_(int32_t cap = 8) {
+            this->coros.Reserve(cap);
         }
 
-        ListLink<Coro, int32_t> coros;
+        template<typename U>
+        void Add(U&& t, Coro&& c) {
+            if (c) return;
+            this->coros.Emplace(std::forward<U>(t), std::move(c));
+        }
 
-        void Add(Coro&& g) {
-            if (g) return;
-            coros.Emplace(std::move(g));
+        void Add(Coro&& c) {
+            if (c) return;
+            this->coros.Emplace(std::move(c));
         }
 
         void Clear() {
-            coros.Clear();
+            this->coros.Clear();
         }
 
         int32_t operator()() {
             int prev = -1, next{};
-            for (auto idx = coros.head; idx != -1;) {
-                if (coros[idx].Resume()) {
-                    next = coros.Remove(idx, prev);
+            for (auto idx = this->coros.head; idx != -1;) {
+                auto& o = this->coros[idx];
+                bool needRemove;
+                if constexpr(std::is_void_v<T>) {
+                    needRemove = o.Resume();
                 } else {
-                    next = coros.Next(idx);
+                    needRemove = !o.first || o.second.Resume();
+                }
+                if (needRemove) {
+                    next = this->coros.Remove(idx, prev);
+                } else {
+                    next = this->coros.Next(idx);
                     prev = idx;
                 }
                 idx = next;
             }
-            return coros.Count();
+            return this->coros.Count();
         }
 
         [[nodiscard]] int32_t Count() const {
-            return coros.Count();
+            return this->coros.Count();
         }
 
         [[nodiscard]] bool Empty() const {
-            return !coros.Count();
+            return !this->coros.Count();
         }
 
         void Reserve(int32_t cap) {
-            coros.Reserve(cap);
+            this->coros.Reserve(cap);
         }
     };
+
+    using Coros = Coros_<void>;
 
     // check condition before Resume ( for life cycle manage )
     template<typename T>
-    struct CorosByCond {
-        CorosByCond(CorosByCond const&) = delete;
-        CorosByCond& operator=(CorosByCond const&) = delete;
-        CorosByCond(CorosByCond&&) noexcept = default;
-        CorosByCond& operator=(CorosByCond&&) noexcept = default;
-        explicit CorosByCond(int32_t cap = 8) {
-            coros.Reserve(cap);
-        }
+    using CondCoros = Coros_<T>;
 
-        ListLink<std::pair<T, Coro>, int32_t> coros;
 
-        template<typename U = T>
-        void Add(U&& t, Coro&& g) {
-            if (g) return;
-            coros.Emplace(std::forward<U>(t), std::move(g));
-        }
+    /***********************************************************************************************************/
+    /***********************************************************************************************************/
 
-        void Clear() {
-            coros.Clear();
-        }
+    template<typename KeyType, typename DataType>
+    using EventArgs = std::pair<KeyType, DataType&>;
 
-        int32_t operator()() {
-            int prev = -1, next{};
-            for (auto idx = coros.head; idx != -1;) {
-                auto& kv = coros[idx];
-                if (!kv.first || kv.second.Resume()) {
-                    next = coros.Remove(idx, prev);
-                } else {
-                    next = coros.Next(idx);
-                    prev = idx;
-                }
-                idx = next;
+    template<typename KeyType, typename DataType>
+    using EventCoro = Coro_<std::variant<std::monostate, EventArgs<KeyType, DataType>>>;
+
+    template<typename KeyType, typename DataType, int timeoutSecs = 15>
+    struct EventCoros {
+        using CoroType = EventCoro<KeyType, DataType>;
+        using YieldArgs = EventArgs<KeyType, DataType>;
+        using Tup = std::tuple<YieldArgs, double, CoroType>;
+        xx::List<Tup, int> condCoros;
+        xx::List<CoroType, int> updateCoros;
+
+        void Add(CoroType&& c) {
+            if (c) return;
+            auto& r = c.h.promise().r;
+            if (r.index()) {
+                condCoros.Emplace( std::move(std::get<YieldArgs>(r)), xx::NowSteadyEpochSeconds() + timeoutSecs, std::move(c) );
+            } else {
+                updateCoros.Emplace(std::move(c));
             }
-            return coros.Count();
         }
 
-        [[nodiscard]] int32_t Count() const {
-            return coros.Count();
+        // match key & store d & resume coro
+        // null: dismatch     0: success      !0: error ( need close ? )
+        template<typename DT = DataType>
+        std::optional<int> Trigger(KeyType const& v, DT&& d) {
+            if (condCoros.Empty()) return false;
+            for (int i = condCoros.len - 1; i >= 0; --i) {
+                auto& tup = condCoros[i];
+                if (v == std::get<YieldArgs>(tup).first) {
+                    std::get<YieldArgs>(tup).second = std::forward<DT>(d);
+                    Resume(i);
+                    return 0;
+                }
+            }
+            return {};
         }
 
-        [[nodiscard]] bool Empty() const {
-            return !coros.Count();
+        // handle condCoros timeout & resume updateCoros
+        size_t Update() {
+            if (!condCoros.Empty()) {
+                auto now = xx::NowSteadyEpochSeconds();
+                for (int i = condCoros.len - 1; i >= 0; --i) {
+                    auto& tup = condCoros[i];
+                    if (std::get<double>(tup) < now) {
+                        std::get<YieldArgs>(tup).second = {};
+                        Resume(i);
+                    }
+                }
+            }
+            if (!updateCoros.Empty()) {
+                for (int i = updateCoros.len - 1; i >= 0; --i) {
+                    if (updateCoros[i].Resume()) {
+                        updateCoros.SwapRemoveAt(i);
+                    }
+                }
+            }
+            return condCoros.len + updateCoros.len;
         }
 
-        void Reserve(int32_t cap) {
-            coros.Reserve(cap);
+    protected:
+        XX_FORCE_INLINE void Resume(int i) {
+            auto& tup = condCoros[i];
+            auto& args = std::get<YieldArgs>(tup);
+            auto& c = std::get<CoroType>(tup);
+            if (c.Resume()) {
+                condCoros.SwapRemoveAt(i);
+            } else {
+                auto& r = c.h.promise().r;
+                if (r.index()) {
+                    args = std::move(std::get<YieldArgs>(r));
+                    std::get<double>(tup) = xx::NowSteadyEpochSeconds() + timeoutSecs;
+                } else {
+                    updateCoros.Emplace(std::move(c));
+                    condCoros.SwapRemoveAt(i);
+                }
+            }
         }
     };
+
 }
 
 /*
