@@ -132,7 +132,7 @@ namespace xx {
     using EventArgs = std::pair<KeyType, DataType&>;
 
     template<typename KeyType, typename DataType>
-    using EventCoro = Coro_<std::variant<std::monostate, EventArgs<KeyType, DataType>>>;
+    using EventCoro = Coro_<std::variant<std::monostate, EventArgs<KeyType, DataType>, int>>;   // int for stop coroutine run
 
     template<typename KeyType, typename DataType, int timeoutSecs = 15>
     struct EventCoros {
@@ -142,14 +142,15 @@ namespace xx {
         xx::List<Tup, int> condCoros;
         xx::List<CoroType, int> updateCoros;
 
-        void Add(CoroType&& c) {
-            if (c) return;
+        int Add(CoroType&& c) {
+            if (c) return 0;
             auto& r = c.h.promise().r;
-            if (r.index()) {
-                condCoros.Emplace(std::move(std::get<Args>(r)), xx::NowSteadyEpochSeconds() + timeoutSecs, std::move(c) );
-            } else {
+            if (r.index() == 0) {
                 updateCoros.Emplace(std::move(c));
-            }
+            } else if (r.index() == 1) {
+                condCoros.Emplace(std::move(std::get<Args>(r)), xx::NowSteadyEpochSeconds() + timeoutSecs, std::move(c) );
+            } else if (r.index() == 2) return std::get<int>(r);
+            return 0;
         }
 
         // match key & store d & resume coro
@@ -161,7 +162,7 @@ namespace xx {
                 auto& tup = condCoros[i];
                 if (v == std::get<Args>(tup).first) {
                     std::get<Args>(tup).second = std::forward<DT>(d);
-                    Resume(i);
+                    if (int r = Resume(i)) return r;
                     return 0;
                 }
             }
@@ -169,14 +170,14 @@ namespace xx {
         }
 
         // handle condCoros timeout & resume updateCoros
-        size_t Update() {
+        int Update() {
             if (!condCoros.Empty()) {
                 auto now = xx::NowSteadyEpochSeconds();
                 for (int i = condCoros.len - 1; i >= 0; --i) {
                     auto& tup = condCoros[i];
                     if (std::get<double>(tup) < now) {
                         std::get<Args>(tup).second = {};
-                        Resume(i);
+                        if (int r = Resume(i)) return r;
                     }
                 }
             }
@@ -187,11 +188,11 @@ namespace xx {
                     }
                 }
             }
-            return condCoros.len + updateCoros.len;
+            return 0;
         }
 
     protected:
-        XX_FORCE_INLINE void Resume(int i) {
+        XX_FORCE_INLINE int Resume(int i) {
             auto& tup = condCoros[i];
             auto& args = std::get<Args>(tup);
             auto& c = std::get<CoroType>(tup);
@@ -199,14 +200,15 @@ namespace xx {
                 condCoros.SwapRemoveAt(i);
             } else {
                 auto& r = c.h.promise().r;
-                if (r.index()) {
-                    args = std::move(std::get<Args>(r));
-                    std::get<double>(tup) = xx::NowSteadyEpochSeconds() + timeoutSecs;
-                } else {
+                if (r.index() == 0) {
                     updateCoros.Emplace(std::move(c));
                     condCoros.SwapRemoveAt(i);
-                }
+                } else if (r.index() == 1) {
+                    args = std::move(std::get<Args>(r));
+                    std::get<double>(tup) = xx::NowSteadyEpochSeconds() + timeoutSecs;
+                } else return std::get<int>(r);
             }
+            return 0;
         }
     };
 

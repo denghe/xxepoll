@@ -38,8 +38,8 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
         return autoIncSerial;
     }
 
-    void AddECoro(ECoro&& c) {
-        responseHandlers.Add(std::move(c));
+    int AddECoro(ECoro&& c) {
+        return responseHandlers.Add(std::move(c));
     }
 
     template<typename DataFiller>
@@ -80,7 +80,7 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
     xx::Coro RegisterUpdateCoro() {
         while(true) {
             CoYield;
-            responseHandlers.Update();
+            if (int r = responseHandlers.Update()) CoReturn;
         }
     }
 
@@ -124,10 +124,11 @@ struct ClientPeer : PeerBase<ClientPeer> {
         auto [e, serial] = SendRequest(  [](xx::Data& d) {
             d.Write("hello");
         } );
-        if (e) { nc->SocketDispose(*this); co_return; }
+        if (e) co_yield e;
         xx::Data_r dr;
         co_yield EArgs{ serial, dr };
         xx::CoutN(dr);
+        co_yield -1;
     }
 };
 
@@ -143,7 +144,8 @@ int main() {
         }
         w->BeginLogic();
     }(nc));
-    while(nc.RunOnce(1) > 1) {
+    for(int i = 2; i > 1; i = nc.RunOnce(1)) {
+        xx::CoutN(i);
         std::this_thread::sleep_for(0.5s);
     }
     return 0;
