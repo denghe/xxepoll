@@ -60,16 +60,15 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
     }
 
     /* example:
-    int r{};
+    auto [e, serial] = SendRequest( [...](xx::Data& d) { ... d.Write( ... ); } );
+    if (e) { nc->SocketDispose(*this); co_return; }
     xx::Data_r dr;
-    CoAwait CoroSendRequest( r, dr, [...](xx::Data& d) { ... d.Write( ... ); } );
-    if (r) ...
+    co_yield EArgs{ serial, dr };
     */
     template<typename DataFiller>
-    ECoro SendRequest(int& r, xx::Data_r& dr, DataFiller&& filler) {
+    std::pair<int, PkgSerial_t> SendRequest(DataFiller&& filler) {
         auto serial = GenSerial();
-        if ((r = SendResponse(-serial, std::forward<DataFiller>(filler)))) co_return;
-        co_yield EArgs{ serial, dr };
+        return { SendResponse(-serial, std::forward<DataFiller>(filler)), serial };
     }
 
     int OnAccept() {
@@ -122,12 +121,12 @@ struct ServerPeer : PeerBase<ServerPeer> {
 struct ClientPeer : PeerBase<ClientPeer> {
     void BeginLogic() { AddECoro(BeginLogic_()); }
     ECoro BeginLogic_() {
-        int r{};
-        xx::Data_r dr;
-        CoAwait( SendRequest( r, dr, [](xx::Data& d) {
+        auto [e, serial] = SendRequest(  [](xx::Data& d) {
             d.Write("hello");
-        } ) );
-        if (r) { nc->SocketDispose(*this); co_return; }
+        } );
+        if (e) { nc->SocketDispose(*this); co_return; }
+        xx::Data_r dr;
+        co_yield EArgs{ serial, dr };
         xx::CoutN(dr);
     }
 };
