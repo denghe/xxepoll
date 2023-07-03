@@ -379,8 +379,8 @@ int main() {
 
 struct EchoPeer : TcpSocket<EchoPeer> {
     using TcpSocket::TcpSocket;
-    xx::Coro Update = Update_();
-    xx::Coro Update_() {
+    xx::ECoro Update = Update_();
+    xx::ECoro Update_() {
         Send(xx::Data::From("hello !"));
         while(true) {
             CoSleep(1s);

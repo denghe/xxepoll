@@ -17,7 +17,7 @@ struct ClientPeer : PeerBase<ClientPeer> {
         xx::CoutN("recv dr = ", dr);
         return 1;   // close
     }
-    void BeginLogic() { AddCoro(BeginLogic_()); }
+    void BeginLogic() { AddCondCoroToNC(BeginLogic_()); }
     xx::Coro BeginLogic_() {
         auto d = xx::Data::From({3, 1, 2, 3});
         for(size_t i = 0; i < d.len; ++i) {

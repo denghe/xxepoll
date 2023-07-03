@@ -175,6 +175,14 @@ namespace xx {
             return { buf + offset, len - offset };
         }
 
+        // fill 剩余 buf to dr
+        [[maybe_unused]] [[nodiscard]] XX_INLINE int ReadLeftBuf(Data_r& dr) {
+            if (offset == len) return __LINE__;
+            dr.Reset(buf + offset, len - offset);
+            offset = len;
+            return 0;
+        }
+
         // 跳过 siz 字节不读. 返回非 0 则失败( 长度不足 )
         [[maybe_unused]] [[nodiscard]] XX_INLINE int ReadJump(size_t const &siz) {
             assert(siz);

@@ -2,21 +2,21 @@
 
 #include "main.h"
 
-using Coros = xx::EventCoros<int, xx::Data_r>;
-using Coro = Coros::CoroType;
-using CoroYA = Coros::YieldArgs;
+using ECoros = xx::EventCoros<int, xx::Data_r>;
+using ECoro = ECoros::CoroType;
+using EArgs = ECoros::Args;
 
 struct Foo {
     Foo() {
         coros.Add(DoSth());
     }
-    Coros coros;
-    Coro DoSth() {
+    ECoros coros;
+    ECoro DoSth() {
         xx::Data_r dr;
-        co_yield CoroYA{ 123, dr };
+        co_yield EArgs{123, dr };
         xx::CoutN(dr);
         CoYield;
-        co_yield CoroYA{ 321, dr };
+        co_yield EArgs{321, dr };
         xx::CoutN(dr);
     }
 };

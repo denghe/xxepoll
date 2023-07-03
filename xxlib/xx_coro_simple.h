@@ -137,8 +137,8 @@ namespace xx {
     template<typename KeyType, typename DataType, int timeoutSecs = 15>
     struct EventCoros {
         using CoroType = EventCoro<KeyType, DataType>;
-        using YieldArgs = EventArgs<KeyType, DataType>;
-        using Tup = std::tuple<YieldArgs, double, CoroType>;
+        using Args = EventArgs<KeyType, DataType>;
+        using Tup = std::tuple<Args, double, CoroType>;
         xx::List<Tup, int> condCoros;
         xx::List<CoroType, int> updateCoros;
 
@@ -146,7 +146,7 @@ namespace xx {
             if (c) return;
             auto& r = c.h.promise().r;
             if (r.index()) {
-                condCoros.Emplace( std::move(std::get<YieldArgs>(r)), xx::NowSteadyEpochSeconds() + timeoutSecs, std::move(c) );
+                condCoros.Emplace(std::move(std::get<Args>(r)), xx::NowSteadyEpochSeconds() + timeoutSecs, std::move(c) );
             } else {
                 updateCoros.Emplace(std::move(c));
             }
@@ -159,8 +159,8 @@ namespace xx {
             if (condCoros.Empty()) return false;
             for (int i = condCoros.len - 1; i >= 0; --i) {
                 auto& tup = condCoros[i];
-                if (v == std::get<YieldArgs>(tup).first) {
-                    std::get<YieldArgs>(tup).second = std::forward<DT>(d);
+                if (v == std::get<Args>(tup).first) {
+                    std::get<Args>(tup).second = std::forward<DT>(d);
                     Resume(i);
                     return 0;
                 }
@@ -175,7 +175,7 @@ namespace xx {
                 for (int i = condCoros.len - 1; i >= 0; --i) {
                     auto& tup = condCoros[i];
                     if (std::get<double>(tup) < now) {
-                        std::get<YieldArgs>(tup).second = {};
+                        std::get<Args>(tup).second = {};
                         Resume(i);
                     }
                 }
@@ -193,14 +193,14 @@ namespace xx {
     protected:
         XX_FORCE_INLINE void Resume(int i) {
             auto& tup = condCoros[i];
-            auto& args = std::get<YieldArgs>(tup);
+            auto& args = std::get<Args>(tup);
             auto& c = std::get<CoroType>(tup);
             if (c.Resume()) {
                 condCoros.SwapRemoveAt(i);
             } else {
                 auto& r = c.h.promise().r;
                 if (r.index()) {
-                    args = std::move(std::get<YieldArgs>(r));
+                    args = std::move(std::get<Args>(r));
                     std::get<double>(tup) = xx::NowSteadyEpochSeconds() + timeoutSecs;
                 } else {
                     updateCoros.Emplace(std::move(c));
@@ -231,7 +231,7 @@ CoType func2() {
 }
 
 int main() {
-    xx::Coros cs;
+    xx::ECoros cs;
 
     auto func = [](int b, int e)->CoType {
         CoYield;

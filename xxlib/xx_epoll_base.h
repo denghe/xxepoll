@@ -258,7 +258,7 @@ namespace xx::net {
         IdxVerType iv;
         sockaddr_in6 addr{};
 
-        void AddCoro(xx::Coro &&c) {
+        void AddCondCoroToNC(xx::Coro &&c) {
             nc->condCoros.Add(xx::WeakFromThis(this), std::move(c));
         }
     };
@@ -293,6 +293,8 @@ namespace xx::net {
     };
 
     template<typename T> concept Has_OnAccept = requires(T t) { t.OnAccept(); };
+    template<typename T> concept Has_OnUpdate = requires(T t) { t.OnUpdate(); };
+    template<typename T> concept Has_OnRunOnce = requires(T t) { t.OnRunOnce(); };
 
     template<typename Derived>
     struct NetCtxBase : Epoll {
@@ -415,6 +417,9 @@ namespace xx::net {
             int r = Wait(timeoutMS);
             r += coros();
             r += condCoros();
+            if constexpr (Has_OnRunOnce<Derived>) {
+                r += ((Derived*)this)->OnRunOnce();
+            }
             return r;
         }
 
@@ -585,7 +590,7 @@ namespace xx::net {
                     len += sizeofLen;
                 }
                 if (offset + len > recv.len) break; // incomplete
-                if (int r = ((Derived *) this)->OnEventsPkg({recv.buf + offset, len, sizeofLen})) return r;
+                if (int r = ((Derived *) this)->OnEventsPkg({recv.buf + offset, len})) return r;
                 offset += len;
             }
             recv.RemoveFront(offset);
