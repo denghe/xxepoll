@@ -1,83 +1,135 @@
 ﻿// test split & combine package
 #include "main.h"
 
-// package define: 4 byte len + serial + typeId + data
+/**************************************************************************************************************/
+
+using PkgLen_t = uint32_t;
+using PkgSerial_t = int32_t;
 struct Package {
-    uint32_t pkgLen{};
-    int32_t serial{};   // negative: request       0: push        positive: response
-    uint32_t typeId{};  // for switch case
+    PkgLen_t pkgLen{};
+    PkgSerial_t serial{};   // negative: request       0: push        positive: response
     xx::Data_r data;
     int Fill(xx::Data_r& dr) {
         if (int r = dr.ReadFixed(pkgLen)) return r; // fixed len
-        if (int r = dr.Read(serial, typeId)) return r; // var
+        if (int r = dr.Read(serial)) return r; // var len
         return dr.ReadLeftBuf(data);
     }
 };
-
-// key: serial
-using ECoros = xx::EventCoros<int32_t, xx::Data_r>;
+using ECoros = xx::EventCoros<PkgSerial_t, xx::Data_r>;
 using ECoro = ECoros::CoroType;
 using EArgs = ECoros::Args;
 
+template<typename T> concept Has_HandleRequest = requires(T t) { t.HandleRequest(std::declval<Package&>()); };
+template<typename T> concept Has_HandlePush = requires(T t) { t.HandlePush(std::declval<Package&>()); };
+
+/**************************************************************************************************************/
+
 struct NetCtx : xx::net::NetCtxBase<NetCtx> {};
 
+// 4 byte len, does not contain self
 template<typename Derived>
-struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg<Derived> {
+struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg<Derived, PkgLen_t, sizeof(PkgLen_t), false> {
+
     ECoros responseHandlers;
+    int32_t autoIncSerial = 0;
+
+    int32_t GenSerial() {
+        autoIncSerial = (autoIncSerial + 1) & 0x7FFFFFFF;
+        return autoIncSerial;
+    }
+
+    void AddECoro(ECoro&& c) {
+        responseHandlers.Add(std::move(c));
+    }
+
+    template<typename DataFiller>
+    int SendResponse(PkgSerial_t serial, DataFiller&& filler) {
+        xx::Data d(this->GetReserveLen());
+        d.Clear();
+        d.WriteJump(sizeof(PkgLen_t));
+        d.Write(serial);
+        filler(d);
+        d.WriteFixedAt(0, PkgLen_t(d.len - sizeof(PkgLen_t))); // len does not contain self
+        xx::CoutN("Send d = ", d);
+        return Send(std::move(d));
+    }
+
+    template<typename DataFiller>
+    int SendPush(DataFiller&& filler) {
+        return SendResponse(0, std::forward<DataFiller>(filler));
+    }
+
+    /* example:
+    int r{};
+    xx::Data_r dr;
+    CoAwait CoroSendRequest( r, dr, [...](xx::Data& d) { ... d.Write( ... ); } );
+    if (r) ...
+    */
+    template<typename DataFiller>
+    ECoro SendRequest(int& r, xx::Data_r& dr, DataFiller&& filler) {
+        auto serial = GenSerial();
+        if ((r = SendResponse(-serial, std::forward<DataFiller>(filler)))) co_return;
+        co_yield EArgs{ serial, dr };
+    }
+
     int OnAccept() {
         xx::CoutN("OnAccept fd = ", fd, " ip = ", addr);
         AddCondCoroToNC(RegisterUpdateCoro());
         return 0;
     }
+
     xx::Coro RegisterUpdateCoro() {
         while(true) {
             CoYield;
             responseHandlers.Update();
         }
     }
+
     int OnEventsPkg(xx::Data_r dr) {
         Package pkg;
         if (int r = pkg.Fill(dr)) return r;
-        if (pkg.serial < 0) return ((Derived*)this)->HandleRequest(pkg);
-        else if (pkg.serial == 0) return ((Derived*)this)->HandlePush(pkg);
-        else return ((Derived*)this)->HandleResponse(pkg);
-    }
-    int HandleResponse(Package const& pkg) {
+        if constexpr(Has_HandleRequest<Derived>) {
+            if (pkg.serial < 0) {
+                pkg.serial = -pkg.serial;
+                return ((Derived *) this)->HandleRequest(pkg);
+            }
+        }
+        if constexpr(Has_HandlePush<Derived>) {
+            if (pkg.serial == 0) return ((Derived*)this)->HandlePush(pkg);
+        }
+        // handle response
         if (auto r = responseHandlers.Trigger(pkg.serial, pkg.data); !r.has_value()) return 0;
         else return *r;
     }
+
 };
 
+/**************************************************************************************************************/
+
 struct ServerPeer : PeerBase<ServerPeer> {
-    int HandleRequest(Package const& pkg) {
-        // todo: switch case pkg.typeId
-        return 0;
-    }
-    int HandlePush(Package const& pkg) {
-        // todo: switch case pkg.typeId
+    int HandleRequest(Package& pkg) {
+        std::string msg;
+        if (int r = pkg.data.Read(msg)) return r;
+        if (msg == "hello") {
+            SendResponse(pkg.serial, [&](xx::Data& d){
+                d.Write("world");
+            });
+        }
         return 0;
     }
 };
 
 struct ClientPeer : PeerBase<ClientPeer> {
-    int HandleRequest(Package const& pkg) {
-        // todo: switch case pkg.typeId
-        return 0;
+    void BeginLogic() { AddECoro(BeginLogic_()); }
+    ECoro BeginLogic_() {
+        int r{};
+        xx::Data_r dr;
+        CoAwait( SendRequest( r, dr, [](xx::Data& d) {
+            d.Write("hello");
+        } ) );
+        if (r) { nc->SocketDispose(*this); co_return; }
+        xx::CoutN(dr);
     }
-    int HandlePush(Package const& pkg) {
-        // todo: switch case pkg.typeId
-        return 0;
-    }
-//    void BeginLogic() { AddCondCoroToNC(BeginLogic_()); }
-//    xx::Coro BeginLogic_() {
-//        auto d = xx::Data::From({3, 1, 2, 3});
-//        for(size_t i = 0; i < d.len; ++i) {
-//            Send(&d[i], 1);
-//            xx::CoutN("i = ", i);
-//            CoYield;
-//        }
-//        xx::CoutN("send finished.");
-//    }
 };
 
 int main() {
@@ -90,7 +142,7 @@ int main() {
             CoSleep(0.2s);
             CoAwait(nc.Connect(r, w, xx::net::ToAddress("127.0.0.1", 12222), 3));
         }
-        //w->BeginLogic();
+        w->BeginLogic();
     }(nc));
     while(nc.RunOnce(1) > 1) {
         std::this_thread::sleep_for(0.5s);

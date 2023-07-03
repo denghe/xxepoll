@@ -160,42 +160,26 @@ namespace xx::net {
         }
     }
 
+    // when sizeof(LenType) == sizeofLen, same as xx::Data::ReadFixed
     template<typename LenType = uint32_t, size_t sizeofLen = 4>
     LenType ReadPackageLen(uint8_t const *buf) {
         static_assert(sizeofLen >= 1 && sizeofLen <= sizeof(LenType));
-        if constexpr (std::endian::native == std::endian::little) {
-            LenType rtv{};
-            memcpy(&rtv, buf, sizeofLen);
-            return rtv;
-        } else {
-            LenType rtv = buf[0];
-            if constexpr (sizeofLen >= 2) rtv += (LenType) buf[1] << 8;
-            if constexpr (sizeofLen >= 3) rtv += (LenType) buf[2] << 16;
-            if constexpr (sizeofLen >= 4) rtv += (LenType) buf[3] << 24;
-            if constexpr (sizeofLen >= 5) rtv += (LenType) buf[4] << 32;
-            if constexpr (sizeofLen >= 6) rtv += (LenType) buf[5] << 40;
-            if constexpr (sizeofLen >= 7) rtv += (LenType) buf[6] << 48;
-            if constexpr (sizeofLen >= 8) rtv += (LenType) buf[7] << 56;
-            return rtv;
+        LenType rtv{};
+        memcpy(&rtv, buf, sizeofLen);
+        if constexpr (std::endian::native == std::endian::big) {
+            rtv = ::xx::BSwap(rtv);
         }
+        return rtv;
     }
 
+    // when sizeof(LenType) == sizeofLen, same as xx::Data::WriteFixed
     template<typename LenType = uint32_t, size_t sizeofLen = 4>
     void WritePackageLen(uint8_t *buf, LenType v) {
         static_assert(sizeofLen >= 1 && sizeofLen <= sizeof(LenType));
-        if constexpr (std::endian::native == std::endian::little) {
-            memcpy(buf, &v, sizeofLen);
-        } else {
-            std::make_unsigned<LenType> u = v;
-            buf[0] = (uint8_t) u;
-            if constexpr (sizeofLen >= 2) buf[1] = u >> 8;
-            if constexpr (sizeofLen >= 3) buf[2] = u >> 16;
-            if constexpr (sizeofLen >= 4) buf[3] = u >> 24;
-            if constexpr (sizeofLen >= 5) buf[4] = u >> 32;
-            if constexpr (sizeofLen >= 6) buf[5] = u >> 40;
-            if constexpr (sizeofLen >= 7) buf[6] = u >> 48;
-            if constexpr (sizeofLen >= 8) buf[7] = u >> 56;
+        if constexpr (std::endian::native == std::endian::big) {
+            v = ::xx::BSwap(v);
         }
+        memcpy(buf, &v, sizeofLen);
     }
 
     struct FdBase {
@@ -560,7 +544,9 @@ namespace xx::net {
     // base code : OnEvents
     template<typename Derived, size_t reserveLen = 1024 * 256, size_t maxLen = 0>
     struct PartialCodes_OnEvents_Base {
+
         xx::Data recv;  // received data container
+
         int OnEvents(uint32_t e) {
             if (e & EPOLLERR || e & EPOLLHUP) return -888;    // fatal error
             if (e & EPOLLOUT) {
@@ -578,6 +564,9 @@ namespace xx::net {
     // Derived interface: int OnEventsPkg(xx::Data_r dr)
     template<typename Derived, typename LenType = uint32_t, size_t sizeofLen = 4, bool lenContainSelf = false, size_t reserveLen = 1024 * 256, size_t maxLen = 0>
     struct PartialCodes_OnEvents_Pkg : PartialCodes_OnEvents_Base<Derived, reserveLen, maxLen> {
+
+        [[nodiscard]] constexpr size_t GetReserveLen() const { return reserveLen; }
+
         int OnEventsIn() {
             auto& recv = ((Derived*)this)->recv;
             size_t offset = 0;
