@@ -1,100 +1,87 @@
 ﻿// test coroutine await
+// known issue: co_await std::suspend_always{}; will lose return value
+
 #include "main.h"
 
-template<typename R>
-struct Coro_;
+// https://en.cppreference.com/w/cpp/coroutine/noop_coroutine
 
-template<>
-struct Coro_<void> {
+#include <coroutine>
+#include <iostream>
+#include <utility>
+
+template<class T>
+struct task {
     struct promise_type {
-        Coro_ get_return_object() { return { H::from_promise(*this) }; }
-        std::suspend_never initial_suspend() { return {}; }
-        std::suspend_always final_suspend() noexcept(true) { return {}; }
-        template<typename U> std::suspend_always yield_value(U&& v) { return {}; }
-        void return_void() {}
-        void unhandled_exception() { std::rethrow_exception(std::current_exception()); }
-    };
-    using H = std::coroutine_handle<promise_type>;
-
-    constexpr bool await_ready() const noexcept { return false; }
-    template<typename AH>
-    void await_suspend(AH ah) {
-        xx::CoutN("Coro_void> ah = ", (size_t)ah.address());
-        xx::CoutN("Coro_void> h = ", (size_t)h.address());
-    }
-    constexpr void await_resume() const noexcept {}
-
-    H h;
-    Coro_() : h(nullptr) {}
-    Coro_(H h) : h(h) {}
-    ~Coro_() { if (h) h.destroy(); }
-    Coro_(Coro_ const& o) = delete;
-    Coro_& operator=(Coro_ const&) = delete;
-    Coro_(Coro_&& o) noexcept : h(o.h) { o.h = nullptr; };
-    Coro_& operator=(Coro_&& o) noexcept { std::swap(h, o.h); return *this; };
-
-    void operator()() { h.resume(); }
-    [[nodiscard]] bool Done() const { return h.done(); }
-    bool Resume() { h.resume(); return h.done(); }
-};
-using Coro = Coro_<void>;
-
-template<typename R>
-struct Coro_ {
-    struct promise_type {
-        R r;
-        Coro_ get_return_object() { return { H::from_promise(*this) }; }
-        std::suspend_never initial_suspend() { return {}; }
-        std::suspend_always final_suspend() noexcept(true) { return {}; }
-        template<typename U>
-        void return_value(U&& u) {
-            r = std::forward<U>(u);
-            xx::CoutN("u = ", u);
+        auto get_return_object() {
+            return task(std::coroutine_handle<promise_type>::from_promise(*this));
         }
-        void unhandled_exception() { std::rethrow_exception(std::current_exception()); }
+        std::suspend_always initial_suspend() { return {}; }
+        struct final_awaiter {
+            bool await_ready() noexcept { return false; }
+            void await_resume() noexcept {}
+            std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
+                if (auto previous = h.promise().previous; previous) return previous;
+                else return std::noop_coroutine();
+            }
+        };
+        final_awaiter final_suspend() noexcept { return {}; }
+        void unhandled_exception() { throw; }
+        void return_value(T value) { result = std::move(value); }
+
+        T result;
+        std::coroutine_handle<> previous;
     };
-    using H = std::coroutine_handle<promise_type>;
-    H h;
 
-    constexpr bool await_ready() const noexcept { return false; }
-    template<typename AH>
-    void await_suspend(AH ah) {
-        xx::CoutN("ah = ", (size_t)ah.address());
-        xx::CoutN("h = ", (size_t)h.address());
+    task(std::coroutine_handle<promise_type> h) : coro(h) {}
+    task(task&& t) = delete;
+    ~task() { coro.destroy(); }
+
+    struct awaiter {
+        bool await_ready() { return false; }
+        T await_resume() { return std::move(coro.promise().result); }
+        auto await_suspend(std::coroutine_handle<> h) {
+            coro.promise().previous = h;
+            return coro;
+        }
+        std::coroutine_handle<promise_type> coro;
+    };
+    awaiter operator co_await() { return awaiter{coro}; }
+    T operator()() {
+        coro.resume();
+        return std::move(coro.promise().result);
     }
-    [[nodiscard]] constexpr R await_resume() const noexcept {
-        return h.promise().r;
+    operator bool() const {
+        return coro && !coro.done();
     }
 
-    Coro_() : h(nullptr) {}
-    Coro_(H h) : h(h) {}
-    ~Coro_() { if (h) h.destroy(); }
-    Coro_(Coro_ const& o) = delete;
-    Coro_& operator=(Coro_ const&) = delete;
-    Coro_(Coro_&& o) noexcept : h(o.h) { o.h = nullptr; };
-    Coro_& operator=(Coro_&& o) noexcept { std::swap(h, o.h); return *this; };
-
-    void operator()() { h.resume(); }
-    [[nodiscard]] bool Done() const { return h.done(); }
-    bool Resume() { h.resume(); return h.done(); }
+private:
+    std::coroutine_handle<promise_type> coro;
 };
-using Coro = Coro_<void>;
 
-Coro_<int> A(int n) {
+task<int> get_random() {
+    std::cout << "in get_random()\n";
     co_await std::suspend_always{};
-    co_return n + n;
+    co_return 4;
 }
 
-Coro B() {
-    auto a = co_await A(1);
-    xx::CoutN(a);
+task<int> test() {
+    task<int> v = get_random();
+    task<int> u = get_random();
+    std::cout << "in test()\n";
+    co_await std::suspend_always{};
+    int x = (co_await v + co_await u);
+    co_await std::suspend_always{};
+    co_return x;
 }
 
 int main() {
-    auto c = B();
-    for (int i = 0; i < 999; ++i) {
-        xx::CoutN("i = ", i );
-        if (c.Resume()) break;
-    }
-    return 0;
+    int i = 0;
+    task<int> t = test();
+LabRetry:
+    ++i;
+    std::cout << "i = " << i << '\n';
+    int result = t();
+    std::cout << result << '\n';
+    if (t) goto LabRetry;
+    std::cout << "done." << '\n';
 }
