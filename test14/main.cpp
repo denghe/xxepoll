@@ -1,5 +1,4 @@
 ﻿// test coroutine await
-// known issue: co_await std::suspend_always{}; will lose return value
 
 #include "main.h"
 
@@ -20,7 +19,7 @@ struct task {
             bool await_ready() noexcept { return false; }
             void await_resume() noexcept {}
             std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
-                if (auto previous = h.promise().previous; previous) return previous;
+                if (auto p = h.promise().previous; p) return p;
                 else return std::noop_coroutine();
             }
         };
@@ -54,13 +53,34 @@ struct task {
         return coro && !coro.done();
     }
 
-private:
+//private:
     std::coroutine_handle<promise_type> coro;
+};
+
+
+struct taskmgr {
+    std::queue<std::coroutine_handle<>> coros;
+    void operator()() {
+        while (!coros.empty()) {
+            auto coro = coros.front();
+            coros.pop();
+            coro();
+        }
+    }
+} tm;
+
+struct Yield {
+    bool await_ready() noexcept { return false; }
+    void await_suspend(std::coroutine_handle<> h) noexcept {
+        std::cout << "in Yield()\n";
+        tm.coros.push(h);
+    };
+    void await_resume() noexcept {}
 };
 
 task<int> get_random() {
     std::cout << "in get_random()\n";
-    co_await std::suspend_always{};
+    co_await Yield();
     co_return 4;
 }
 
@@ -68,20 +88,14 @@ task<int> test() {
     task<int> v = get_random();
     task<int> u = get_random();
     std::cout << "in test()\n";
-    co_await std::suspend_always{};
     int x = (co_await v + co_await u);
-    co_await std::suspend_always{};
     co_return x;
 }
 
 int main() {
     int i = 0;
     task<int> t = test();
-LabRetry:
-    ++i;
-    std::cout << "i = " << i << '\n';
-    int result = t();
-    std::cout << result << '\n';
-    if (t) goto LabRetry;
-    std::cout << "done." << '\n';
+    tm.coros.push(t.coro);
+    tm();
+    std::cout << "t.coro.promise().result = " << t.coro.promise().result << std::endl;
 }
