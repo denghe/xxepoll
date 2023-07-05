@@ -1,5 +1,4 @@
 ﻿// test coroutine await
-// known issue: co_await std::suspend_always{}; will lose return value
 
 #include "main.h"
 
@@ -150,33 +149,52 @@ namespace coro {
     } // namespace detail
 } // namespace coro
 
+/****************************************************************************************************/
+
+struct taskmgr {
+    std::queue<std::coroutine_handle<>> coros;
+    void operator()() {
+        while (!coros.empty()) {
+            auto coro = coros.front();
+            coros.pop();
+            coro();
+        }
+    }
+} tm;
+
+struct Yield {
+    bool await_ready() noexcept { return false; }
+    void await_suspend(std::coroutine_handle<> h) noexcept {
+        std::cout << "in Yield()\n";
+        tm.coros.push(h);
+    };
+    void await_resume() noexcept {}
+};
+
 coro::Task<int> calc1(int i) {
-    co_await std::suspend_always{};
-    co_await std::suspend_always{};
+    co_await Yield();
+    co_await Yield();
     co_return i + i;
 }
 
 coro::Task<int> calc2(int i) {
-    co_await std::suspend_always{};
+    co_await Yield();
     auto a = co_await calc1(i);
-    co_await std::suspend_always{};
+    co_await Yield();
     co_return a + a;
 }
 
 coro::Task<int> calc3(int i) {
-    co_await std::suspend_always{};
+    co_await Yield();
     auto a = co_await calc2(i);
-    co_await std::suspend_always{};
+    co_await Yield();
     co_return a + a;
 }
 
 int main() {
     auto t = calc3(1);
-    for (int i = 0; !t.IsReady(); ++i) {
-        xx::CoutN("i = ", i);
-        t.Resume();
-    }
+    tm.coros.push(t.h);
+    tm();
     xx::CoutN("r = ", t.Result());
-
     return 0;
 }

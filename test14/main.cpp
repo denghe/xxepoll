@@ -93,7 +93,6 @@ task<int> test() {
 }
 
 int main() {
-    int i = 0;
     task<int> t = test();
     tm.coros.push(t.coro);
     tm();
