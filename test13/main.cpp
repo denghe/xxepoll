@@ -24,9 +24,7 @@ namespace coro {
             void unhandled_exception() { throw; }
             std::coroutine_handle<> previous;
         };
-
         template<typename R> struct Promise final : PromiseBase {
-            using H = std::coroutine_handle<Promise<R>>;
             static constexpr bool rIsRef = std::is_lvalue_reference_v<R>;
             Task<R> get_return_object() noexcept;
             void return_value(R v) {
@@ -47,9 +45,7 @@ namespace coro {
         private:
             std::conditional_t<rIsRef, std::optional<std::reference_wrapper<std::remove_reference_t<R>>>, R> r;
         };
-
         template<> struct Promise<void> : PromiseBase {
-            using H = std::coroutine_handle<Promise<void>>;
             Task<void> get_return_object() noexcept;
             void return_void() noexcept {}
         };
@@ -57,7 +53,7 @@ namespace coro {
 
     template<typename R>
     struct [[nodiscard]] Task {
-        using promise_type     = detail::Promise<R>;
+        using promise_type = detail::Promise<R>;
         using H = std::coroutine_handle<promise_type>;
         H h;
 
@@ -83,7 +79,7 @@ namespace coro {
 
         struct AwaiterBase {
             bool await_ready() const noexcept { return false; }
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<> h_) noexcept {
+            auto await_suspend(std::coroutine_handle<> h_) noexcept {
                 h.promise().previous = h_;
                 return h;
             }
@@ -123,11 +119,11 @@ namespace coro {
     namespace detail {
         template<typename R>
         inline Task<R> Promise<R>::get_return_object() noexcept {
-            return Task<R>{H::from_promise(*this)};
+            return Task<R>{ std::coroutine_handle<Promise<R>>::from_promise(*this)};
         }
 
         inline Task<> Promise<void>::get_return_object() noexcept {
-            return Task<>{H::from_promise(*this)};
+            return Task<>{std::coroutine_handle<Promise<void>>::from_promise(*this)};
         }
     }
 }

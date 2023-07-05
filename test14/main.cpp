@@ -72,7 +72,7 @@ struct taskmgr {
 struct Yield {
     bool await_ready() noexcept { return false; }
     void await_suspend(std::coroutine_handle<> h) noexcept {
-        std::cout << "in Yield()\n";
+        std::cout << "in Yield() t.mcoros.size = " << tm.coros.size() << std::endl;
         tm.coros.push(h);
     };
     void await_resume() noexcept {}
