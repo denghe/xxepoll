@@ -2,35 +2,33 @@
 
 #include "main.h"
 
-//https://github.com/jbaldwin/libcoro/blob/main/inc/coro/task.hpp
+// reference: https://github.com/jbaldwin/libcoro/blob/main/inc/coro/task.hpp
 
 namespace coro {
     template<typename R = void>
-    class Task;
+    struct Task;
 
     namespace detail {
-        struct promise_base {
-            struct final_awaitable {
+        struct PromiseBase {
+            struct Awaiter {
                 bool await_ready() const noexcept { return false; }
+                void await_resume() noexcept {}
                 template<typename promise_type>
-                std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h_) noexcept {
-                    if (auto& p = h_.promise(); p.h) return p.h;
+                std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
+                    if (auto& p = h.promise(); p.previous) return p.previous;
                     else return std::noop_coroutine();
                 }
-                void await_resume() noexcept {}
             };
             std::suspend_always initial_suspend() { return {}; }
-            final_awaitable final_suspend() noexcept(true) { return {}; }
-            void unhandled_exception() { std::rethrow_exception(std::current_exception()); }
-            std::coroutine_handle<> h;
+            Awaiter final_suspend() noexcept(true) { return {}; }
+            void unhandled_exception() { throw; }
+            std::coroutine_handle<> previous;
         };
 
-        template<typename R> struct promise final : promise_base {
-            using Task_t = Task<R>;
-            using H = std::coroutine_handle<promise<R>>;
+        template<typename R> struct Promise final : PromiseBase {
+            using H = std::coroutine_handle<Promise<R>>;
             static constexpr bool rIsRef = std::is_lvalue_reference_v<R>;
-
-            Task_t get_return_object() noexcept;
+            Task<R> get_return_object() noexcept;
             void return_value(R v) {
                 if constexpr (rIsRef) {
                     r.reset();
@@ -50,33 +48,23 @@ namespace coro {
             std::conditional_t<rIsRef, std::optional<std::reference_wrapper<std::remove_reference_t<R>>>, R> r;
         };
 
-        template<> struct promise<void> : public promise_base {
-            using Task_t = Task<void>;
-            using H = std::coroutine_handle<promise<void>>;
-            Task_t get_return_object() noexcept;
+        template<> struct Promise<void> : PromiseBase {
+            using H = std::coroutine_handle<Promise<void>>;
+            Task<void> get_return_object() noexcept;
             void return_void() noexcept {}
         };
-    } // namespace detail
+    }
 
     template<typename R>
     struct [[nodiscard]] Task {
-        using promise_type     = detail::promise<R>;
+        using promise_type     = detail::Promise<R>;
         using H = std::coroutine_handle<promise_type>;
+        H h;
 
-        struct awaitable_base {
-            awaitable_base(H h_) noexcept : h(h_) {}
-            bool await_ready() const noexcept { return !h || h.done(); }
-            std::coroutine_handle<> await_suspend(std::coroutine_handle<> h_) noexcept {
-                h.promise().h = h_;
-                return h;
-            }
-            H h;
-        };
-
-        Task() noexcept = default;
-        explicit Task(H h_) : h(h_) {}
-        Task(const Task&) = delete;
-        Task& operator=(const Task&) = delete;
+        Task() = default;
+        Task(H h_) : h(h_) {}
+        Task(Task const&) = delete;
+        Task& operator=(Task const&) = delete;
         Task(Task&& o) noexcept : h(std::exchange(o.h, nullptr)) {}
         Task& operator=(Task&& o) noexcept {
             if (std::addressof(o) != this) {
@@ -93,61 +81,56 @@ namespace coro {
             }
         }
 
-        // True if the Task is in its final suspend or if the Task has been destroyed.
-        bool IsReady() const noexcept { return !h || h.done(); }
-
-        bool Resume() {
-            if (!h.done()) {
-                h.resume();
+        struct AwaiterBase {
+            bool await_ready() const noexcept { return false; }
+            std::coroutine_handle<> await_suspend(std::coroutine_handle<> h_) noexcept {
+                h.promise().previous = h_;
+                return h;
             }
-            return !h.done();
-        }
-
-        bool Destroy() {
-            if (h) {
-                h.destroy();
-                h = nullptr;
-                return true;
-            }
-            return false;
-        }
-
-        auto Result() ->decltype(auto) {
-            return h.promise().Result();
-        }
-
+            H h;
+        };
         auto operator co_await() const& noexcept {
-            struct awaitable : public awaitable_base {
+            struct Awaiter : AwaiterBase {
                 auto await_resume() -> decltype(auto) {
                     if constexpr (std::is_same_v<void, R>) return;
                     else return this->h.promise().Result();
                 }
             };
-            return awaitable{h};
+            return Awaiter{h};
         }
         auto operator co_await() const&& noexcept {
-            struct awaitable : public awaitable_base {
+            struct Awaiter : AwaiterBase {
                 auto await_resume() -> decltype(auto) {
                     if constexpr (std::is_same_v<void, R>) return;
                     else return std::move(this->h.promise()).Result();
                 }
             };
-            return awaitable{h};
+            return Awaiter{h};
         }
-        H h;
+
+        operator bool() const {
+            assert(h);
+            return !h.done();
+        }
+        void Resume() {
+            h.resume();
+        }
+        auto Result() const ->decltype(auto) {
+            return h.promise().Result();
+        }
     };
 
     namespace detail {
         template<typename R>
-        inline Task<R> promise<R>::get_return_object() noexcept {
+        inline Task<R> Promise<R>::get_return_object() noexcept {
             return Task<R>{H::from_promise(*this)};
         }
 
-        inline Task<> promise<void>::get_return_object() noexcept {
+        inline Task<> Promise<void>::get_return_object() noexcept {
             return Task<>{H::from_promise(*this)};
         }
-    } // namespace detail
-} // namespace coro
+    }
+}
 
 /****************************************************************************************************/
 
