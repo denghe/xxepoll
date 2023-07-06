@@ -10,10 +10,29 @@
 
 struct TaskBase {
     std::coroutine_handle<> coro;
+    TaskBase() = delete;
+    TaskBase(std::coroutine_handle<> h) {
+        coro = h;
+        std::cout << "Task(h) coro = " << (size_t)coro.address() << std::endl;
+    }
+    TaskBase(TaskBase const& o) = delete;
+    TaskBase& operator=(TaskBase const& o) = delete;
+    TaskBase(TaskBase&& o) : coro(std::exchange(o.coro, nullptr)) {}
+    TaskBase& operator=(TaskBase&& o) = delete;
+    ~TaskBase() {
+        if (coro) {
+            std::cout << "~Task() coro = " << (size_t) coro.address() << std::endl;
+            coro.destroy();
+        }
+    }
 };
+
+template<typename T> concept IsTask = requires(T t) { std::is_base_of_v<TaskBase, T>; };
 
 template<class T>
 struct Task : TaskBase {
+    using TaskBase::TaskBase;
+
     struct promise_type {
         auto get_return_object() {
             return Task(std::coroutine_handle<promise_type>::from_promise(*this));
@@ -37,16 +56,6 @@ struct Task : TaskBase {
     };
     using H = std::coroutine_handle<promise_type>;
 
-    Task(H h) {
-        coro = h;
-        std::cout << "Task(h) coro = " << (size_t)coro.address() << std::endl;
-    }
-    Task(Task&& t) = delete;
-    ~Task() {
-        std::cout << "~Task() coro = " << (size_t)coro.address() << std::endl;
-        coro.destroy();
-    }
-
     struct awaiter {
         bool await_ready() { return false; }
         T await_resume() { return std::move(curr.promise().result); }
@@ -67,46 +76,44 @@ struct TaskStore {
     TaskStore(TaskStore const&) = delete;
     TaskStore& operator=(TaskStore const&) = delete;
     TaskStore(TaskStore && o) : store(o.store), Deleter(std::exchange(o.Deleter, nullptr)) {}
-    TaskStore& operator=(TaskStore && o) = delete;
+    TaskStore& operator=(TaskStore && o) {
+        std::swap(store, o.store);
+        std::swap(Deleter, o.Deleter);
+        return *this;
+    }
 
     ~TaskStore() {
-        Deleter((void*)&store);
+        if (Deleter) {
+            Deleter((void *) &store);
+        }
     }
 
-    template<typename T>
-    void SetValue(T&& v) {
-        new (&store) T(std::move(v));
-        Deleter = [](void* o) {
-            ((T*)o)->~T();
+    template<IsTask T>
+    TaskStore(T && o) {
+        using U = std::decay_t<T>;
+        Deleter = [](void* p) {
+            ((U*)p)->~U();
         };
+        new (&store) U(std::move(o));
     }
 
-    void Resume() {
+    std::coroutine_handle<>& Coro() {
         assert(Deleter);
-        ((TaskBase&)store).coro.resume();
-    }
-
-    bool Done() const {
-        assert(Deleter);
-        return ((TaskBase&)store).coro.done();
+        return ((TaskBase&)store).coro;
     }
 };
 
-//template <typename T> concept IsBool = std::is_same_v<bool, T>;
-//template<typename T> concept Has_Resume = requires(T t) { t.Resume() -> IsBool; };
-template<typename T> concept IsTask = requires(T t) { std::is_base_of_v<TaskBase, T>; };
 
 struct TaskManager {
-    xx::ListDoubleLink<TaskStore, int, uint> tasks;
+    std::vector<TaskStore> tasks;
     std::vector<std::coroutine_handle<>> coros, coros_;
 
     template<IsTask T>
     void Add(T&& v) {
-        auto& t = tasks.Emplace();
-        auto iv = tasks.Tail();
-        t.SetValue(std::forward<T>(v));
-        if (t.Resume(); t.Done()) {
-            tasks.Remove(iv);
+        auto c = v.coro;
+        c.resume();
+        if (!c.done()) {
+            tasks.emplace_back(std::move(v));
         }
     }
 
@@ -114,12 +121,22 @@ struct TaskManager {
         if (coros.empty()) return 0;
         std::swap(coros, coros_);
         for(auto& c : coros_) {
+            std::cout << "RunOnce c = " << (size_t)c.address() << std::endl;
             c();
+            assert(!c.done());
+            //assert(tasks.find(c) == tasks.end());
         }
         coros_.clear();
-        tasks.Foreach([](auto& Task)->bool {
-            return Task.Done();
-        });
+        // todo: optimize
+        if (ssize_t i = tasks.size()) {
+            for (--i; i >= 0; --i) {
+                if ( tasks[i].Coro().done() ) {
+                    std::swap(tasks.back(), tasks[i]);
+                    tasks.pop_back();
+                }
+            }
+        }
+        assert(coros.size() || tasks.size() == 0);
         return coros.size();
     }
 
@@ -170,4 +187,6 @@ struct Foo {
 int main() {
     Foo foo;
     foo.tm.Add(foo.test());
+    while(foo.tm.RunOnce());
+    std::cout << "end\n";
 }
