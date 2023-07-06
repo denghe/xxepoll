@@ -126,9 +126,9 @@ struct ClientPeer : PeerBase<ClientPeer> {
         } );
         if (e) co_yield e;
         xx::Data_r dr;
-        co_yield EArgs{ serial, dr };
+        co_yield EArgs{ serial, dr };   // cond wait
         xx::CoutN(dr);
-        co_yield -1;
+        co_yield -1;    // kill peer
     }
 };
 

@@ -10,17 +10,17 @@ namespace coro {
 
     namespace detail {
         struct PromiseBase {
-            struct Awaiter {
+            struct FinalAwaiter {
                 bool await_ready() const noexcept { return false; }
                 void await_resume() noexcept {}
                 template<typename promise_type>
-                std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
-                    if (auto& p = h.promise(); p.previous) return p.previous;
+                std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> current) noexcept {
+                    if (auto& p = current.promise(); p.previous) return p.previous;
                     else return std::noop_coroutine();
                 }
             };
             std::suspend_always initial_suspend() { return {}; }
-            Awaiter final_suspend() noexcept(true) { return {}; }
+            FinalAwaiter final_suspend() noexcept(true) { return {}; }
             void unhandled_exception() { throw; }
             std::coroutine_handle<> previous;
         };
@@ -55,64 +55,63 @@ namespace coro {
     struct [[nodiscard]] Task {
         using promise_type = detail::Promise<R>;
         using H = std::coroutine_handle<promise_type>;
-        H h;
+        H coro;
 
-        Task() = default;
-        Task(H h_) : h(h_) {}
+        Task(H h_) : coro(h_) {}
         Task(Task const&) = delete;
         Task& operator=(Task const&) = delete;
-        Task(Task&& o) noexcept : h(std::exchange(o.h, nullptr)) {}
+        Task(Task&& o) noexcept : coro(std::exchange(o.coro, nullptr)) {}
         Task& operator=(Task&& o) noexcept {
             if (std::addressof(o) != this) {
-                if (h) {
-                    h.destroy();
+                if (coro) {
+                    coro.destroy();
                 }
-                h = std::exchange(o.h, nullptr);
+                coro = std::exchange(o.coro, nullptr);
             }
             return *this;
         }
         ~Task() {
-            if (h) {
-                h.destroy();
+            if (coro) {
+                coro.destroy();
             }
         }
 
         struct AwaiterBase {
             bool await_ready() const noexcept { return false; }
-            auto await_suspend(std::coroutine_handle<> h_) noexcept {
-                h.promise().previous = h_;
-                return h;
+            auto await_suspend(std::coroutine_handle<> previous) noexcept {
+                current.promise().previous = previous;
+                return current;
             }
-            H h;
+            H current;
         };
         auto operator co_await() const& noexcept {
             struct Awaiter : AwaiterBase {
                 auto await_resume() -> decltype(auto) {
                     if constexpr (std::is_same_v<void, R>) return;
-                    else return this->h.promise().Result();
+                    else return this->current.promise().Result();
                 }
             };
-            return Awaiter{h};
+            return Awaiter{coro};
         }
         auto operator co_await() const&& noexcept {
             struct Awaiter : AwaiterBase {
                 auto await_resume() -> decltype(auto) {
                     if constexpr (std::is_same_v<void, R>) return;
-                    else return std::move(this->h.promise()).Result();
+                    else return std::move(this->current.promise()).Result();
                 }
             };
-            return Awaiter{h};
+            return Awaiter{coro};
         }
 
         operator bool() const {
-            assert(h);
-            return !h.done();
+            assert(coro);
+            return !coro.done();
         }
         void Resume() {
-            h.resume();
+            coro.resume();
         }
         auto Result() const ->decltype(auto) {
-            return h.promise().Result();
+            return coro.promise().Result();
         }
     };
 
@@ -143,9 +142,9 @@ struct taskmgr {
 
 struct Yield {
     bool await_ready() noexcept { return false; }
-    void await_suspend(std::coroutine_handle<> h) noexcept {
+    void await_suspend(std::coroutine_handle<> coro) noexcept {
         std::cout << "in Yield()\n";
-        tm.coros.push(h);
+        tm.coros.push(coro);
     };
     void await_resume() noexcept {}
 };
@@ -172,7 +171,7 @@ coro::Task<int> calc3(int i) {
 
 int main() {
     auto t = calc3(1);
-    tm.coros.push(t.h);
+    tm.coros.push(t.coro);
     tm();
     xx::CoutN("r = ", t.Result());
     return 0;
