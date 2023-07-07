@@ -155,7 +155,6 @@ public:
     auto Yield() {
         return Yield_t(*this);
     }
-
 };
 
 struct Foo {
@@ -168,7 +167,9 @@ struct Foo {
         auto sg = xx::MakeSimpleScopeGuard([]{ std::cout << "~get2()\n"; });
         std::cout << "in get2()\n";
         co_await tm.Yield();
-        std::cout << "in get2() after yield\n";
+        std::cout << "in get2() after yield 1\n";
+        co_await tm.Yield();
+        std::cout << "in get2() after yield 2\n";
         co_return 4;
     }
 
@@ -190,6 +191,7 @@ struct Foo {
 int main() {
     Foo foo;
     foo.tm.AddTask(foo.test());
-    while(foo.tm.RunOnce());
+    foo.tm.RunOnce();
+    //while(foo.tm.RunOnce());
     std::cout << "end\n";
 }
