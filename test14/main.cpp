@@ -13,7 +13,7 @@ struct TaskBase {
     TaskBase() = delete;
     TaskBase(std::coroutine_handle<> h) {
         coro = h;
-        std::cout << "Task(h) coro = " << (size_t)coro.address() << std::endl;
+        //std::cout << "Task(h) coro = " << (size_t)coro.address() << std::endl;
     }
     TaskBase(TaskBase const& o) = delete;
     TaskBase& operator=(TaskBase const& o) = delete;
@@ -21,7 +21,7 @@ struct TaskBase {
     TaskBase& operator=(TaskBase&& o) = delete;
     ~TaskBase() {
         if (coro) {
-            std::cout << "~Task() coro = " << (size_t) coro.address() << std::endl;
+            //std::cout << "~Task() coro = " << (size_t) coro.address() << std::endl;
             coro.destroy();
         }
     }
@@ -29,11 +29,17 @@ struct TaskBase {
 
 template<typename T> concept IsTask = requires(T t) { std::is_base_of_v<TaskBase, T>; };
 
+struct TaskManager;
+struct PromiseBase {
+    std::coroutine_handle<> previous;
+    void unhandled_exception() { throw; }
+};
+
 template<class T>
 struct Task : TaskBase {
     using TaskBase::TaskBase;
 
-    struct promise_type {
+    struct promise_type : PromiseBase {
         auto get_return_object() {
             return Task(std::coroutine_handle<promise_type>::from_promise(*this));
         }
@@ -48,16 +54,15 @@ struct Task : TaskBase {
             }
         };
         final_awaiter final_suspend() noexcept { return {}; }
-        void unhandled_exception() { throw; }
         void return_value(T value) { result = std::move(value); }
 
         T result;
-        std::coroutine_handle<> previous;
+
     };
     using H = std::coroutine_handle<promise_type>;
 
     struct awaiter {
-        bool await_ready() { return false; }
+        bool await_ready() noexcept { return false; }
         T await_resume() { return std::move(curr.promise().result); }
         auto await_suspend(std::coroutine_handle<> prev) {
             curr.promise().previous = prev;
@@ -105,15 +110,23 @@ struct TaskStore {
 
 
 struct TaskManager {
-    std::vector<TaskStore> tasks;
+    xx::ListDoubleLink<TaskStore, int, uint> tasks;
     std::vector<std::coroutine_handle<>> coros, coros_;
 
+protected:
     template<IsTask T>
-    void Add(T&& v) {
-        auto c = v.coro;
+    Task<int> RootTask(T t, xx::ListDoubleLinkIndexAndVersion<int, uint> iv) {
+        co_await t;
+        tasks.Remove(iv);
+    };
+public:
+
+    template<IsTask T>
+    void AddTask(T&& v) {
+        auto c = (typename T::H&)v.coro;
         c.resume();
         if (!c.done()) {
-            tasks.emplace_back(std::move(v));
+            tasks.Add()( RootTask(std::forward<T>(v), tasks.Tail()) );
         }
     }
 
@@ -121,22 +134,11 @@ struct TaskManager {
         if (coros.empty()) return 0;
         std::swap(coros, coros_);
         for(auto& c : coros_) {
-            std::cout << "RunOnce c = " << (size_t)c.address() << std::endl;
+            //std::cout << "RunOnce c = " << (size_t)c.address() << std::endl;
             c();
             assert(!c.done());
-            //assert(tasks.find(c) == tasks.end());
         }
         coros_.clear();
-        // todo: optimize
-        if (ssize_t i = tasks.size()) {
-            for (--i; i >= 0; --i) {
-                if ( tasks[i].Coro().done() ) {
-                    std::swap(tasks.back(), tasks[i]);
-                    tasks.pop_back();
-                }
-            }
-        }
-        assert(coros.size() || tasks.size() == 0);
         return coros.size();
     }
 
@@ -145,7 +147,7 @@ struct TaskManager {
         Yield_t(TaskManager& tm) : tm(tm) {}
         bool await_ready() noexcept { return false; }
         void await_suspend(std::coroutine_handle<> coro) noexcept {
-            std::cout << "in Yield() coro = " << (size_t)coro.address() << std::endl;
+            //std::cout << "in Yield() coro = " << (size_t)coro.address() << std::endl;
             tm.coros.push_back(coro);
         };
         void await_resume() noexcept {}
@@ -157,12 +159,14 @@ struct TaskManager {
 };
 
 struct Foo {
-    TaskManager tm;
+    int id{};
+    std::string name;
+    // ...
+    TaskManager tm; // last member
 
     Task<int> get2() {
         auto sg = xx::MakeSimpleScopeGuard([]{ std::cout << "~get2()\n"; });
         std::cout << "in get2()\n";
-        //co_await Yield();
         co_await tm.Yield();
         std::cout << "in get2() after yield\n";
         co_return 4;
@@ -181,12 +185,11 @@ struct Foo {
         auto v = co_await get1();
         co_return v;
     }
-
 };
 
 int main() {
     Foo foo;
-    foo.tm.Add(foo.test());
+    foo.tm.AddTask(foo.test());
     while(foo.tm.RunOnce());
     std::cout << "end\n";
 }
