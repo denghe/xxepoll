@@ -203,7 +203,7 @@ namespace xx {
             }
         }
 
-        size_t RunOnce() {
+        size_t ResumeOnce() {
             if (coros.empty()) return 0;
             std::swap(coros, coros_);
             for (auto &c: coros_) {
@@ -227,21 +227,9 @@ namespace xx {
         auto Yield() {
             return YieldAwaiter(*this);
         }
+
+        // todo: Yield( resume conditions )
     };
-
 }
-
-// put struct's eof position
-#define XX_TASKMANAGER_MEMBER_ATTACH            \
-xx::TaskManager taskManager;                    \
-template<xx::detail::IsTask T>                  \
-void AddTask(T &&v) {                           \
-    taskManager.AddTask(std::forward<T>(v));    \
-}                                               \
-inline auto RunOnce() {                         \
-    return taskManager.RunOnce();               \
-}
-
-#define XxTaskYield co_await taskManager.Yield();
 
 
