@@ -195,3 +195,65 @@ int main() {
     //while(foo.tm.RunOnce());
     std::cout << "end\n";
 }
+
+
+
+
+
+
+
+/*
+struct monster {
+    bool alive = true;
+    awaitable update(std::shared_ptr<monster> memholder) {
+        while( alive ) {
+            co_await yield{};
+        }
+    }
+};
+struct player {
+    std::weak_ptr<monster> target;
+};
+int main() {
+    auto m = std::make_shared<monster>();
+    co_spawn( m->update(m) );
+    auto p = std::make_shared<player>();
+    p->target = m;
+    // ...
+    m.alive = false;
+    m.reset();
+    // ... wait m coroutine quit? m dispose?
+    if (auto m = p->target.lock()) {
+        if (m->alive) {
+            // ...
+        }
+    }
+}
+
+
+
+
+
+struct monster {
+    task_mgr tm;
+    awaitable update() {
+        while( true ) {
+            co_await yield{};
+        }
+    }
+};
+struct player {
+    std::weak_ptr<monster> target;
+};
+int main() {
+    auto m = std::make_shared<monster>();
+    m->tm.co_spawn( m->update() );
+    auto p = std::make_shared<player>();
+    p->target = m;
+    // ...
+    m.reset();
+    if (auto m = p->target.lock()) {
+        // ...
+    }
+}
+*/

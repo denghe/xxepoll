@@ -3,5 +3,6 @@
 #define XXEPOLL_TEST15_MAIN_H_
 
 #include <xx_epoll_base.h>
+#include <xx_task.h>
 
 #endif
