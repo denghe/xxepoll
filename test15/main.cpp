@@ -6,14 +6,14 @@ struct Foo {
     int id{};
     std::string name;
     // ...
-    xx::TaskManager tm; // last place, for safety visit Foo's members
+    XX_TASKMANAGER_MEMBER_ATTACH;
 
     xx::Task<int> get2() {
         auto sg = xx::MakeSimpleScopeGuard([]{ std::cout << "~get2()\n"; });
         std::cout << "in get2()\n";
-        co_await tm.Yield();
+        XxTaskYield;
         std::cout << "in get2() after yield 1\n";
-        co_await tm.Yield();
+        XxTaskYield;
         std::cout << "in get2() after yield 2\n";
         co_return 4;
     }
@@ -34,8 +34,7 @@ struct Foo {
 
 int main() {
     Foo foo;
-    foo.tm.AddTask(foo.test());
-    //foo.tm.RunOnce();
-    while(foo.tm.RunOnce());
+    foo.AddTask(foo.test());
+    while(foo.RunOnce());
     std::cout << "end\n";
 }

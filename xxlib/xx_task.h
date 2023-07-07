@@ -230,3 +230,18 @@ namespace xx {
     };
 
 }
+
+// put struct's eof position
+#define XX_TASKMANAGER_MEMBER_ATTACH            \
+xx::TaskManager taskManager;                    \
+template<xx::detail::IsTask T>                  \
+void AddTask(T &&v) {                           \
+    taskManager.AddTask(std::forward<T>(v));    \
+}                                               \
+inline auto RunOnce() {                         \
+    return taskManager.RunOnce();               \
+}
+
+#define XxTaskYield co_await taskManager.Yield();
+
+
