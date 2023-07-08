@@ -21,7 +21,7 @@ int main() {
         Foo f;
         auto secs = xx::NowSteadyEpochSeconds();
         for (int i = 0; i < 10000000; ++i) {
-            f.test().Run<false>();
+            f.test()();
         }
         std::cout << "foo.n = " << f.n << ", secs = " << xx::NowSteadyEpochSeconds(secs) << "\n";
     }

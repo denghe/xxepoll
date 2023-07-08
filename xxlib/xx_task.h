@@ -9,6 +9,9 @@ namespace xx {
     namespace detail {
         template<typename Derived, typename R>
         struct PromiseBase {
+            std::coroutine_handle<> prev, last;
+            PromiseBase *root{ this };
+
             struct FinalAwaiter {
                 bool await_ready() const noexcept { return false; }
                 void await_resume() noexcept {}
@@ -27,16 +30,14 @@ namespace xx {
             FinalAwaiter final_suspend() noexcept(true) { return {}; }
             std::suspend_always yield_value(int) { return {}; }
             void unhandled_exception() { throw; }
-
-            std::coroutine_handle<> prev, last;
-            PromiseBase *root{ this };
         };
 
         template<typename R>
         struct Promise final : PromiseBase<Promise<R>, R> {
+            std::optional<R> r;
+
             template<typename T>
             void return_value(T&& v) { r = std::forward<T>(v); }
-            std::optional<R> r;
         };
 
         template<>
@@ -49,24 +50,29 @@ namespace xx {
     struct [[nodiscard]] Task {
         using promise_type = detail::Promise<R>;
         using H = std::coroutine_handle<promise_type>;
+        H coro;
+
         Task() = delete;
         Task(H h) { coro = h; }
         Task(Task const &o) = delete;
         Task &operator=(Task const &o) = delete;
         Task(Task &&o) : coro(std::exchange(o.coro, nullptr)) {}
-        Task &operator=(Task &&o) = delete;
+        Task &operator=(Task &&o) {
+            std::swap(coro, o.coro);
+            return *this;
+        }
         ~Task() { if (coro) { coro.destroy(); } }
 
         struct Awaiter {
             bool await_ready() const noexcept { return false; }
-            auto await_suspend(std::coroutine_handle<> prev) noexcept {
+            decltype(auto) await_suspend(std::coroutine_handle<> prev) noexcept {
                 auto& cp = curr.promise();
                 cp.prev = prev;
                 cp.root = ((H&)prev).promise().root;
                 cp.root->last = curr;
                 return curr;
             }
-            auto await_resume() -> decltype(auto) {
+            decltype(auto) await_resume() {
                 assert(curr.done());
                 auto& p = curr.promise();
                 p.root->last = p.prev;
@@ -77,8 +83,9 @@ namespace xx {
         };
         Awaiter operator co_await() const& noexcept { return {coro}; }
 
-        template<bool runOnce = true>
-        decltype(auto) Run() {
+        decltype(auto) Result() const { return *coro.promise().r; }
+        template<bool runOnce>
+        XX_FORCE_INLINE decltype(auto) Run() {
             auto& p = coro.promise();
             auto& c = p.last;
             while(c && !c.done()) {
@@ -87,8 +94,12 @@ namespace xx {
             }
             if constexpr (!std::is_void_v<R>) return *p.r;
         }
-        bool IsReady() const { return !coro || coro.done(); }
-        decltype(auto) Result() const { return *coro.promise().r; }
-        H coro;
+        operator bool() const { return !coro || coro.done(); }
+        void operator()() { Run<false>(); }
+        bool Resume() { Run<true>(); return *this; }
     };
+
+    template<typename T>
+    struct IsPod<Task<T>> : std::true_type {};
 }
+
