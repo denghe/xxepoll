@@ -264,11 +264,13 @@ struct Foo {
 };
 
 int main() {
-    Foo f;
-    auto secs = xx::NowSteadyEpochSeconds();
-    for (int i = 0; i < 10000000; ++i) {
-        auto t = f.test();
-        t.sync();
+    for (int j = 0; j < 10; ++j) {
+        Foo f;
+        auto secs = xx::NowSteadyEpochSeconds();
+        for (int i = 0; i < 10000000; ++i) {
+            auto t = f.test();
+            t.sync();
+        }
+        std::cout << "foo.n = " << f.n << ", secs = " << xx::NowSteadyEpochSeconds(secs) << "\n";
     }
-    std::cout << "foo.n = " << f.n << ", secs = " << xx::NowSteadyEpochSeconds(secs) << "\n";
 }

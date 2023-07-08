@@ -62,12 +62,13 @@ struct [[nodiscard]] Task {
             auto& cp = curr.promise();
             cp.prev = prev;
             cp.root = ((H&)prev).promise().root;
-            cp.last = curr;
+            cp.root->last = curr;
             return curr;
         }
         auto await_resume() -> decltype(auto) {
-            auto& p = this->curr.promise();
-            p.root->last = p.root->prev;
+            assert(curr.done());
+            auto& p = curr.promise();
+            p.root->last = p.prev;
             if constexpr (std::is_same_v<void, R>) return;
             else if constexpr (needMovePromise) return *std::move(p).r;
             else return *p.r;
@@ -79,13 +80,13 @@ struct [[nodiscard]] Task {
 
     decltype(auto) operator()() {
         auto& p = coro.promise();
-        auto& c = coro.promise().last;
+        auto& c = p.last;
         while(c && !c.done()) {
             c.resume();
         }
         if constexpr (!std::is_void_v<R>) return *p.r;
     }
-    bool Done() const { return coro.done(); }
+    bool IsReady() const { return !coro || coro.done(); }
     decltype(auto) Result() const { return *coro.promise().r; }
     void Resume() {
         auto& c = coro.promise().last;
@@ -113,17 +114,15 @@ struct Foo {
 };
 
 int main() {
-    Foo f;
-    {
-        auto t = f.test();
-        t();
+    for (int j = 0; j < 10; ++j) {
+        Foo f;
+        auto secs = xx::NowSteadyEpochSeconds();
+        for (int i = 0; i < 10000000; ++i) {
+            auto t = f.test();
+            t();
+        }
+        std::cout << "foo.n = " << f.n << ", secs = " << xx::NowSteadyEpochSeconds(secs) << "\n";
     }
-    auto secs = xx::NowSteadyEpochSeconds();
-    for (int i = 0; i < 10000000; ++i) {
-        auto t = f.test();
-        t();
-    }
-    std::cout << "foo.n = " << f.n << ", secs = " << xx::NowSteadyEpochSeconds(secs) << "\n";
 }
 
 
