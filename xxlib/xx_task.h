@@ -2,15 +2,17 @@
 // important: only support static function or lambda !!!  COPY data from arguments !!! do not ref !!!
 
 #include "xx_typetraits.h"
+
 namespace xx {
-    template<typename R = void>
+    template<typename R = void, typename Y = int>
     struct Task;
 
     namespace detail {
-        template<typename Derived, typename R>
+        template<typename Derived, typename R, typename Y>
         struct PromiseBase {
             std::coroutine_handle<> prev, last;
             PromiseBase *root{ this };
+            Y y;
 
             struct FinalAwaiter {
                 bool await_ready() const noexcept { return false; }
@@ -21,34 +23,38 @@ namespace xx {
                     else return std::noop_coroutine();
                 }
             };
-            Task<R> get_return_object() noexcept {
-                auto tmp = Task<R>{ std::coroutine_handle<Derived>::from_promise(*(Derived*)this) };
+            Task<R, Y> get_return_object() noexcept {
+                auto tmp = Task<R, Y>{ std::coroutine_handle<Derived>::from_promise(*(Derived*)this) };
                 tmp.coro.promise().last = tmp.coro;
                 return tmp;
             }
             std::suspend_always initial_suspend() { return {}; }
             FinalAwaiter final_suspend() noexcept(true) { return {}; }
-            std::suspend_always yield_value(int) { return {}; }
+            template<std::convertible_to<Y> U>
+            std::suspend_always yield_value(U&& v) {
+                root->y = std::forward<U>(v);
+                return {};
+            }
             void unhandled_exception() { throw; }
         };
 
-        template<typename R>
-        struct Promise final : PromiseBase<Promise<R>, R> {
+        template<typename R, typename Y>
+        struct Promise final : PromiseBase<Promise<R, Y>, R, Y> {
             std::optional<R> r;
 
             template<typename T>
-            void return_value(T&& v) { r = std::forward<T>(v); }
+            void return_value(T&& v) { r.emplace(std::forward<T>(v)); }
         };
 
-        template<>
-        struct Promise<void> : PromiseBase<Promise<void>, void> {
+        template<typename Y>
+        struct Promise<void, Y> : PromiseBase<Promise<void, Y>, void, Y> {
             void return_void() noexcept {}
         };
     }
 
-    template<typename R>
+    template<typename R, typename Y>
     struct [[nodiscard]] Task {
-        using promise_type = detail::Promise<R>;
+        using promise_type = detail::Promise<R, Y>;
         using H = std::coroutine_handle<promise_type>;
         H coro;
 
@@ -84,7 +90,9 @@ namespace xx {
         Awaiter operator co_await() const& noexcept { return {coro}; }
 
         decltype(auto) Result() const { return *coro.promise().r; }
-        template<bool runOnce>
+        decltype(auto) YieldValue() const { return coro.promise().y; }
+
+        template<bool runOnce = false>
         XX_FORCE_INLINE decltype(auto) Run() {
             auto& p = coro.promise();
             auto& c = p.last;
@@ -94,12 +102,12 @@ namespace xx {
             }
             if constexpr (!std::is_void_v<R>) return *p.r;
         }
-        operator bool() const { return !coro || coro.done(); }
-        void operator()() { Run<false>(); }
+        operator bool() const { return /*!coro ||*/ coro.done(); }
+        void operator()() { Run<true>(); }
         bool Resume() { Run<true>(); return *this; }
     };
 
-    template<typename T>
-    struct IsPod<Task<T>> : std::true_type {};
+    template<typename R, typename Y>
+    struct IsPod<Task<R, Y>> : std::true_type {};
 }
 

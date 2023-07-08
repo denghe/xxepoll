@@ -1,4 +1,4 @@
-﻿// test split & combine package
+﻿// test split & combine package & event request
 #include "main.h"
 
 /**************************************************************************************************************/
@@ -9,13 +9,13 @@ struct Package {
     PkgLen_t pkgLen{};
     PkgSerial_t serial{};   // negative: request       0: push        positive: response
     xx::Data_r data;
-    int Fill(xx::Data_r& dr) {
+    int ReadFrom(xx::Data_r& dr) {
         if (int r = dr.ReadFixed(pkgLen)) return r; // fixed len
         if (int r = dr.Read(serial)) return r; // var len
         return dr.ReadLeftBuf(data);
     }
 };
-using ECoros = xx::EventCoros<PkgSerial_t, xx::Data_r>;
+using ECoros = xx::EventCoros<false, PkgSerial_t, xx::Data_r>;
 using ECoro = ECoros::CoroType;
 using EArgs = ECoros::Args;
 
@@ -38,8 +38,9 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
         return autoIncSerial;
     }
 
-    int AddECoro(ECoro&& c) {
-        return responseHandlers.Add(std::move(c));
+    template<typename CT>
+    int AddECoro(CT&& c) {
+        return responseHandlers.Add(std::forward<CT>(c));
     }
 
     template<typename DataFiller>
@@ -73,20 +74,20 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
 
     int OnAccept() {
         xx::CoutN("OnAccept fd = ", fd, " ip = ", addr);
-        AddCondCoroToNC(RegisterUpdateCoro());
+        AddCondTaskToNC(RegisterUpdateTask());
         return 0;
     }
 
-    xx::Coro RegisterUpdateCoro() {
+    xx::Task<> RegisterUpdateTask() {
         while(true) {
-            CoYield;
+            co_yield 0;
             if (int r = responseHandlers.Update()) CoReturn;
         }
     }
 
     int OnEventsPkg(xx::Data_r dr) {
         Package pkg;
-        if (int r = pkg.Fill(dr)) return r;
+        if (int r = pkg.ReadFrom(dr)) return r;
         if constexpr(Has_HandleRequest<Derived>) {
             if (pkg.serial < 0) {
                 pkg.serial = -pkg.serial;
@@ -135,13 +136,13 @@ struct ClientPeer : PeerBase<ClientPeer> {
 int main() {
     NetCtx nc;
     nc.Listen<ServerPeer>(12222);
-    nc.AddCoro([](NetCtx& nc)->xx::Coro{
-        int r{};
-        xx::Weak<ClientPeer> w;
-        while (!w) {
-            CoSleep(0.2s);
-            CoAwait(nc.Connect(r, w, xx::net::ToAddress("127.0.0.1", 12222), 3));
-        }
+    nc.AddTask([](NetCtx& nc)->xx::Task<> {
+    LabBegin:
+        co_yield 0;
+        co_yield 0;
+        auto [r, w] = co_await nc.Connect<ClientPeer>(xx::net::ToAddress("127.0.0.1", 12222), 3);
+        if (r) goto LabBegin;
+        xx_assert(w);
         w->BeginLogic();
     }(nc));
     for(int i = 2; i > 1; i = nc.RunOnce(1)) {

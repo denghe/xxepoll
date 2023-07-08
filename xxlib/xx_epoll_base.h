@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "xx_coro_simple.h"
+#include "xx_coros.h"
 #include "xx_ptr.h"
 #include "xx_data_queue.h"
 #include "xx_data_shared.h"
@@ -242,8 +242,8 @@ namespace xx::net {
         IdxVerType iv;
         sockaddr_in6 addr{};
 
-        void AddCondCoroToNC(xx::Coro &&c) {
-            nc->condCoros.Add(xx::WeakFromThis(this), std::move(c));
+        void AddCondTaskToNC(xx::Task<> &&c) {
+            nc->condTasks.Add(xx::WeakFromThis(this), std::move(c));
         }
     };
 
@@ -289,11 +289,11 @@ namespace xx::net {
         xx::ListDoubleLink<xx::Shared<Socket<Derived>>, int, uint> sockets;    // listeners + accepted peers container
         IdxVerType lastListenerIV;  // for visit all sockets, skip listeners ( Foreach( []{}, Next( iv ) )
 
-        xx::Coros coros;
-        xx::CondCoros<xx::Weak<Socket<Derived>>> condCoros;
+        xx::Tasks tasks;
+        xx::CondTasks<xx::Weak<Socket<Derived>>> condTasks;
 
-        void AddCoro(xx::Coro &&c) {
-            coros.Add(std::move(c));
+        void AddTask(xx::Task<> &&c) {
+            tasks.Add(std::move(c));
         }
 
         NetCtxBase() {
@@ -399,65 +399,49 @@ namespace xx::net {
 
         int RunOnce(int timeoutMS) {
             int r = Wait(timeoutMS);
-            r += coros();
-            r += condCoros();
+            r += tasks();
+            r += condTasks();
             if constexpr (Has_OnRunOnce<Derived>) {
                 r += ((Derived*)this)->OnRunOnce();
             }
             return r;
         }
 
-        template<typename PeerType>
-        xx::Coro Connect(int &r1, xx::Weak<PeerType> &r2, sockaddr_in6 const &addr, double timeoutSecs) {
+        template<typename PeerType, typename R = std::pair<int, xx::Weak<PeerType>>>
+        xx::Task<R> Connect(sockaddr_in6 addr, double timeoutSecs) {
             auto fd = MakeSocketFD();
-            if (fd < 0) {
-                r1 = fd;
-                r2.Reset();
-                CoReturn;
-            }
+            if (fd < 0) co_return R{ fd, {} };
             if (auto r = connect(fd, (sockaddr *) &addr, sizeof(addr)); r == 0) {
-                r1 = 0;
-                r2 = MakePeer<PeerType>(fd, addr);
-                CoReturn;
+                co_return R{ 0, MakePeer<PeerType>(fd, addr) };
             } else if (auto e = errno; e == EINPROGRESS) {        // r == -1
                 auto secs = xx::NowSteadyEpochSeconds();
                 auto w = MakePeer<Connector<Derived>>(fd, addr);
                 while (true) {
-                    CoYield;
-                    if (!w) {   // fd error
-                        r1 = -88888;
-                        r2.Reset();
-                        CoReturn;
-                    }
+                    co_yield 0;
+                    if (!w) co_return R{ -88888, {} };   // fd error
                     if (w->connected) { // success: replace
+                        R rtv;
                         auto hasEpollIn = w->hasEpollIn;
-                        r1 = 0;
                         auto s = xx::Make<PeerType>();
-                        r2 = s;
+                        rtv.second = s;
                         s->OnEvents__ = [](FdBase *s, uint32_t e) { return ((PeerType *) s)->OnEvents(e); };
                         SocketReplace(*w, std::move(s));
                         if (hasEpollIn) {
-                            if (int rr = r2->OnEvents(EPOLLIN)) {
-                                SocketDispose(*r2);  // log?
-                                r1 = rr;
-                                r2.Reset();
+                            if (int rr = rtv.second->OnEvents(EPOLLIN)) {
+                                SocketDispose(*rtv.second);  // log?
+                                rtv.first = rr;
+                                rtv.second.Reset();
                             }
                         }
-                        CoReturn;
+                        co_return rtv;
                     }
                     if (xx::NowSteadyEpochSeconds() - secs > timeoutSecs) { // timeout:
                         SocketDispose(*w);
-                        r1 = -99999;
-                        r2.Reset();
-                        CoReturn;
+                        co_return R{ -99999, {} };
                     }
                 }
-            } else {
-                r1 = -errno;
-                r2.Reset();
-            }
+            } else co_return R{ -errno, {} };
         }
-
     };
 
 

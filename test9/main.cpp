@@ -17,13 +17,13 @@ struct ClientPeer : PeerBase<ClientPeer> {
         xx::CoutN("recv dr = ", dr);
         return 1;   // close
     }
-    void BeginLogic() { AddCondCoroToNC(BeginLogic_()); }
-    xx::Coro BeginLogic_() {
+    void BeginLogic() { AddCondTaskToNC(BeginLogic_()); }
+    xx::Task<> BeginLogic_() {
         auto d = xx::Data::From({3, 1, 2, 3});
         for(size_t i = 0; i < d.len; ++i) {
             Send(&d[i], 1);
             xx::CoutN("i = ", i);
-            CoYield;
+            co_yield 0;
         }
         xx::CoutN("send finished.");
     }
@@ -32,13 +32,12 @@ struct ClientPeer : PeerBase<ClientPeer> {
 int main() {
     NetCtx nc;
     nc.Listen<ServerPeer>(12222);
-    nc.AddCoro([](NetCtx& nc)->xx::Coro{
-        int r{};
-        xx::Weak<ClientPeer> w;
-        while (!w) {
-            CoSleep(0.2s);
-            CoAwait(nc.Connect(r, w, xx::net::ToAddress("127.0.0.1", 12222), 3));
-        }
+    nc.AddTask([](NetCtx& nc)->xx::Task<> {
+        LabBegin:
+        co_yield 0;
+        co_yield 0;
+        auto [r, w] = co_await nc.Connect<ClientPeer>(xx::net::ToAddress("127.0.0.1", 12222), 3);
+        if (!r) goto LabBegin;
         w->BeginLogic();
     }(nc));
     while(nc.RunOnce(1) > 1) {

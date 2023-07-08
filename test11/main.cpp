@@ -2,7 +2,7 @@
 
 #include "main.h"
 
-using ECoros = xx::EventCoros<int, xx::Data_r>;
+using ECoros = xx::EventCoros<false, int, xx::Data_r>;
 using ECoro = ECoros::CoroType;
 using EArgs = ECoros::Args;
 
@@ -13,10 +13,10 @@ struct Foo {
     ECoros coros;
     ECoro DoSth() {
         xx::Data_r dr;
-        co_yield EArgs{123, dr };
+        co_yield EArgs{ 123, dr };
         xx::CoutN(dr);
-        CoYield;
-        co_yield EArgs{321, dr };
+        co_yield 0;
+        co_yield EArgs{ 321, dr };
         xx::CoutN(dr);
     }
 };

@@ -24,15 +24,14 @@ int main() {
     NetCtx nc;
 
     for (int i = 0; i < 6; ++i) {
-        nc.AddCoro([](NetCtx& nc)->xx::Coro{
+        nc.AddTask([](NetCtx& nc)->xx::Task<> {
             sockaddr_in6 addr{};
             xx_assert(-1 != xx::net::FillAddress("127.0.0.1", 55555, addr));
-            int r{};
-            xx::Weak<ClientPeer> w;
-            LabRetry:
+        LabRetry:
             xx::CoutN("********************************************************* begin connect.");
-            CoSleep(0.2s);
-            CoAwait( nc.Connect(r, w, addr, 3) );
+            co_yield 0;
+            co_yield 0;
+            auto [r, w] = co_await nc.Connect<ClientPeer>(addr, 3);
             if (!w) goto LabRetry;     // log r ?
             xx::CoutN("********************************************************* connected.");
             w->Send((void *) "a", 1);   // send first data

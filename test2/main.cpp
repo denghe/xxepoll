@@ -339,12 +339,14 @@ struct TcpSocket : Socket {
 struct EchoPeer : TcpSocket<EchoPeer> {
     using TcpSocket::TcpSocket;
 
-    xx::Coro Update = Update_();
-    xx::Coro Update_() {
+    xx::Task<> Update = Update_();
+    xx::Task<> Update_() {
         auto sg = xx::MakeSimpleScopeGuard([]{xx::CoutN("coro has been killed !!!");});
         Send(xx::Data::From("hello !"));
-        while(true) {
-            CoSleep(1s);
+        while (true) {
+            for (int i = 0; i < 60; ++i) {  // sleep 1s
+                co_yield 0;
+            }
             Send(xx::Data::From({'.'}));
         }
     }

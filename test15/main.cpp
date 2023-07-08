@@ -1,45 +1,38 @@
-﻿// test Task
+﻿// test Task Manager
 #include "main.h"
-struct Foo : xx::TaskManager {
-    int n = 0;
-    xx::Task<int> get2() {
-        //auto sg = xx::MakeSimpleScopeGuard([]{ std::cout << "~get2()\n"; });
-        //std::cout << "in get2()\n";
-        //co_await Yield();
-        //std::cout << "in get2() after yield 1\n";
-        co_await Yield();
-        //std::cout << "in get2() after yield 2\n";
-        co_return 4;
-    }
-    xx::Task<int> get1() {
-        //auto sg = xx::MakeSimpleScopeGuard([]{ std::cout << "~get1()\n"; });
-        //std::cout << "in get1()\n";
-        co_return co_await get2() * co_await get2();
-    }
-    xx::Task<> test() {
-        //auto sg = xx::MakeSimpleScopeGuard([]{ std::cout << "~test()\n"; });
-        //std::cout << "in test()\n";
-        auto v = co_await get1();
-        n += v;
-        //std::cout << "get1() = " << v << std::endl;
-    }
 
-    xx::Coro testCoro() {
+struct Foo {
+    int n = 0;
+    xx::Task<> testCoro1() {
+        co_yield 0;
+        n += 1;
+        co_yield 0;
+        n += 1;
+    }
+    xx::Coro testCoro2() {
+        co_yield 0;
+        n += 1;
         co_yield 0;
         n += 1;
     }
 };
 int main() {
-    Foo foo;
-    auto secs = xx::NowSteadyEpochSeconds();
-    for (int i = 0; i < 10000000; ++i) {
-        foo.AddTask(foo.test());
-        while(foo.ResumeOnce());
+    for (int j = 0; j < 10; ++j) {
+        Foo f;
+        auto secs = xx::NowSteadyEpochSeconds();
+        for (int i = 0; i < 10000000; ++i) {
+            auto o = f.testCoro1();
+            o.Run();
+        }
+        std::cout << "testCoro1 foo.n = " << f.n << ", secs = " << xx::NowSteadyEpochSeconds(secs) << "\n";
     }
-    std::cout << "foo.n = " << foo.n << ", secs = " << xx::NowSteadyEpochSeconds(secs) << "\n";
-    for (int i = 0; i < 40000000; ++i) {
-        auto c = foo.testCoro();
-        while(!c.Resume());
+    for (int j = 0; j < 10; ++j) {
+        Foo f;
+        auto secs = xx::NowSteadyEpochSeconds();
+        for (int i = 0; i < 10000000; ++i) {
+            auto o = f.testCoro2();
+            o.Run();
+        }
+        std::cout << "testCoro2 foo.n = " << f.n << ", secs = " << xx::NowSteadyEpochSeconds(secs) << "\n";
     }
-    std::cout << "foo.n = " << foo.n << ", secs = " << xx::NowSteadyEpochSeconds(secs) << "\n";
 }
