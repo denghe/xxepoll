@@ -1,18 +1,15 @@
-﻿// test coroutine await
-
+﻿// test Task without manager
 #include "main.h"
 
 template<typename R = void>
 struct Task;
 
 namespace detail {
-
     template<typename Derived, typename R>
     struct PromiseBase {
         struct FinalAwaiter {
             bool await_ready() const noexcept { return false; }
             void await_resume() noexcept {}
-
             template<typename promise_type>
             std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> curr) noexcept {
                 if (auto &p = curr.promise(); p.prev) return p.prev;
@@ -30,7 +27,7 @@ namespace detail {
         void unhandled_exception() { throw; }
 
         std::coroutine_handle<> prev, last;
-        PromiseBase *root{};
+        PromiseBase *root{ this };
     };
 
     template<typename R>
@@ -61,10 +58,10 @@ struct [[nodiscard]] Task {
     template<bool needMovePromise>
     struct Awaiter {
         bool await_ready() const noexcept { return false; }
-        auto await_suspend(H prev) noexcept {
+        auto await_suspend(std::coroutine_handle<> prev) noexcept {
             auto& cp = curr.promise();
             cp.prev = prev;
-            cp.root = prev.promise().root;
+            cp.root = ((H&)prev).promise().root;
             cp.last = curr;
             return curr;
         }
@@ -72,39 +69,80 @@ struct [[nodiscard]] Task {
             auto& p = this->curr.promise();
             p.root->last = p.root->prev;
             if constexpr (std::is_same_v<void, R>) return;
-            else if constexpr (needMovePromise) return std::move(p).Result();
-            else return p.Result();
+            else if constexpr (needMovePromise) return *std::move(p).r;
+            else return *p.r;
         }
-
         H curr;
     };
     auto operator co_await() const& noexcept { return Awaiter<false>{coro}; }
     auto operator co_await() const&& noexcept { return Awaiter<true>{coro}; }
 
-    auto Result() const -> decltype(auto) { return *coro.promise().r; }
-    bool Resume() {
+    decltype(auto) operator()() {
+        auto& p = coro.promise();
         auto& c = coro.promise().last;
-        if (!c || c.done()) return true;
-        c.resume();
-        return c.done();
+        while(c && !c.done()) {
+            c.resume();
+        }
+        if constexpr (!std::is_void_v<R>) return *p.r;
     }
-
+    bool Done() const { return coro.done(); }
+    decltype(auto) Result() const { return *coro.promise().r; }
+    void Resume() {
+        auto& c = coro.promise().last;
+        while(c && !c.done()) {
+            c.resume();
+        }
+    }
     H coro;
 };
 
-int main() {
-    auto t = []()->Task<int>{
+
+struct Foo {
+    int n = 0;
+    Task<int> get2() {
         co_yield 1;
-        co_yield 1;
-        co_return 123;
-    }();
-    for (int i = 0;; ++i) {
-        if (t.Resume()) break;
-        std::cout << "i = " << i << std::endl;
+        co_return 4;    // todo: fix
     }
-    std::cout << "t = " << t.Result() << std::endl;
-    return 0;
+    Task<int> get1() {
+        co_return co_await get2() * co_await get2();
+    }
+    Task<> test() {
+        auto v = co_await get1();
+        n += v;
+    }
+};
+
+int main() {
+    Foo f;
+    {
+        auto t = f.test();
+        t();
+    }
+    auto secs = xx::NowSteadyEpochSeconds();
+    for (int i = 0; i < 10000000; ++i) {
+        auto t = f.test();
+        t();
+    }
+    std::cout << "foo.n = " << f.n << ", secs = " << xx::NowSteadyEpochSeconds(secs) << "\n";
 }
+
+
+//int main() {
+//    auto t = []()->Task<int>{
+//        std::cout << "before co_yield 1" << std::endl;
+//        co_yield 1;
+//        std::cout << "before co_yield 2" << std::endl;
+//        co_yield 2;
+//        std::cout << "before co_return 123" << std::endl;
+//        co_return 123;
+//    }();
+//    for (int i = 0;; ++i) {
+//        if (t()) break;
+//        std::cout << "i = " << i << std::endl;
+//    }
+//    std::cout << "t = " << t.Result() << std::endl;
+//    return 0;
+//}
 
 
 
