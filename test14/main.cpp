@@ -35,24 +35,9 @@ namespace detail {
 
     template<typename R>
     struct Promise final : PromiseBase<Promise<R>, R> {
-        static constexpr bool rIsRef = std::is_lvalue_reference_v<R>;
-        void return_value(R v) {
-            if constexpr (rIsRef) {
-                r.reset();
-                r = v;
-            } else {
-                r = std::move(v);
-            }
-        }
-        std::conditional_t<rIsRef, R, const R &> Result() const &{
-            if constexpr (rIsRef) return r.value();
-            else return r;
-        }
-        R &&Result() &&requires(not rIsRef) {
-            return std::move(r);
-        }
-
-        std::conditional_t<rIsRef, std::optional<std::reference_wrapper<std::remove_reference_t<R>>>, R> r;
+        template<typename T>
+        void return_value(T&& v) { r = std::forward<T>(v); }
+        std::optional<R> r;
     };
 
     template<>
@@ -96,7 +81,7 @@ struct [[nodiscard]] Task {
     auto operator co_await() const& noexcept { return Awaiter<false>{coro}; }
     auto operator co_await() const&& noexcept { return Awaiter<true>{coro}; }
 
-    auto Result() const -> decltype(auto) { return coro.promise().Result(); }
+    auto Result() const -> decltype(auto) { return *coro.promise().r; }
     bool Resume() {
         auto& c = coro.promise().last;
         if (!c || c.done()) return true;
@@ -108,14 +93,16 @@ struct [[nodiscard]] Task {
 };
 
 int main() {
-    auto t = []()->Task<void>{
+    auto t = []()->Task<int>{
         co_yield 1;
         co_yield 1;
+        co_return 123;
     }();
     for (int i = 0;; ++i) {
         if (t.Resume()) break;
         std::cout << "i = " << i << std::endl;
     }
+    std::cout << "t = " << t.Result() << std::endl;
     return 0;
 }
 
