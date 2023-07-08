@@ -1,178 +1,274 @@
-﻿// test coroutine await
+﻿#include <coroutine>
+#include <cstdint>
+#include <exception>
+#include <functional>
+#include <iostream>
+#include <limits>
+#include <list>
+#include <memory>
+#include <thread>
+#include <type_traits>
 
-#include "main.h"
+template<typename T>
+class TaskPromise;
 
-// reference: https://github.com/jbaldwin/libcoro/blob/main/inc/coro/task.hpp
+template<typename T>
+class Task;
 
-namespace coro {
-    template<typename R = void>
-    struct Task;
-
-    namespace detail {
-        struct PromiseBase {
-            struct FinalAwaiter {
-                bool await_ready() const noexcept { return false; }
-                void await_resume() noexcept {}
-                template<typename promise_type>
-                std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> current) noexcept {
-                    if (auto& p = current.promise(); p.previous) return p.previous;
-                    else return std::noop_coroutine();
-                }
-            };
-            std::suspend_always initial_suspend() { return {}; }
-            FinalAwaiter final_suspend() noexcept(true) { return {}; }
-            void unhandled_exception() { throw; }
-            std::coroutine_handle<> previous;
-        };
-        template<typename R> struct Promise final : PromiseBase {
-            static constexpr bool rIsRef = std::is_lvalue_reference_v<R>;
-            Task<R> get_return_object() noexcept;
-            void return_value(R v) {
-                if constexpr (rIsRef) {
-                    r.reset();
-                    r = v;
-                } else {
-                    r = std::move(v);
-                }
-            }
-            std::conditional_t<rIsRef, R, const R&> Result() const& {
-                if constexpr (rIsRef) return r.value();
-                else return r;
-            }
-            R&& Result() && requires(not rIsRef) {
-                return std::move(r);
-            }
-        private:
-            std::conditional_t<rIsRef, std::optional<std::reference_wrapper<std::remove_reference_t<R>>>, R> r;
-        };
-        template<> struct Promise<void> : PromiseBase {
-            Task<void> get_return_object() noexcept;
-            void return_void() noexcept {}
-        };
+template<typename T>
+class TaskAwaiter {
+public:
+    friend Task<T>;
+    bool await_ready() {
+        return false;
     }
 
-    template<typename R>
-    struct [[nodiscard]] Task {
-        using promise_type = detail::Promise<R>;
-        using H = std::coroutine_handle<promise_type>;
-        H coro;
+    template<typename U>
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<TaskPromise<U>> h);
+    decltype(auto)          await_resume();
 
-        Task(H h_) : coro(h_) {}
-        Task(Task const&) = delete;
-        Task& operator=(Task const&) = delete;
-        Task(Task&& o) noexcept : coro(std::exchange(o.coro, nullptr)) {}
-        Task& operator=(Task&& o) noexcept {
-            if (std::addressof(o) != this) {
-                if (coro) {
-                    coro.destroy();
-                }
-                coro = std::exchange(o.coro, nullptr);
-            }
-            return *this;
-        }
-        ~Task() {
-            if (coro) {
-                coro.destroy();
-            }
-        }
+private:
+    TaskAwaiter(std::coroutine_handle<TaskPromise<T>> handle) : m_handle(handle) {}
+    std::coroutine_handle<TaskPromise<T>> m_handle;
+};
 
-        struct AwaiterBase {
-            bool await_ready() const noexcept { return false; }
-            auto await_suspend(std::coroutine_handle<> previous) noexcept {
-                current.promise().previous = previous;
-                return current;
-            }
-            H current;
-        };
-        auto operator co_await() const& noexcept {
-            struct Awaiter : AwaiterBase {
-                auto await_resume() -> decltype(auto) {
-                    if constexpr (std::is_same_v<void, R>) return;
-                    else return this->current.promise().Result();
-                }
-            };
-            return Awaiter{coro};
-        }
-        auto operator co_await() const&& noexcept {
-            struct Awaiter : AwaiterBase {
-                auto await_resume() -> decltype(auto) {
-                    if constexpr (std::is_same_v<void, R>) return;
-                    else return std::move(this->current.promise()).Result();
-                }
-            };
-            return Awaiter{coro};
-        }
+template<typename T = void>
+class Task {
+public:
+    using promise_type = TaskPromise<T>;
+    friend promise_type;
 
-        operator bool() const {
-            assert(coro);
-            return !coro.done();
-        }
-        void Resume() {
-            coro.resume();
-        }
-        auto Result() const ->decltype(auto) {
-            return coro.promise().Result();
-        }
-    };
-
-    namespace detail {
-        template<typename R>
-        inline Task<R> Promise<R>::get_return_object() noexcept {
-            return Task<R>{ std::coroutine_handle<Promise<R>>::from_promise(*this)};
-        }
-
-        inline Task<> Promise<void>::get_return_object() noexcept {
-            return Task<>{std::coroutine_handle<Promise<void>>::from_promise(*this)};
+    ~Task() {
+        if (m_handle && m_handle.done()) {
+            m_handle.destroy();
         }
     }
-}
 
-/****************************************************************************************************/
-
-struct taskmgr {
-    std::queue<std::coroutine_handle<>> coros;
-    void operator()() {
-        while (!coros.empty()) {
-            auto coro = coros.front();
-            coros.pop();
-            coro();
-        }
+    Task(Task &&other) : m_handle(other.m_handle) {
+        other.m_handle = nullptr;
     }
-} tm;
+    Task(const Task &) = delete;
 
-struct Yield {
-    bool await_ready() noexcept { return false; }
-    void await_suspend(std::coroutine_handle<> coro) noexcept {
-        std::cout << "in Yield()\n";
-        tm.coros.push(coro);
-    };
+    Task &operator=(Task &&other) {
+        if (std::addressof(other) != this) {
+            std::swap(m_handle, other.m_handle);
+            if (other.m_handle) {
+                other.m_handle.destroy();
+            }
+        }
+        return *this;
+    }
+    Task &operator=(const Task &) = delete;
+
+    TaskAwaiter<T> operator co_await() const noexcept {
+        return TaskAwaiter<T>{m_handle};
+    }
+
+    bool is_ready() const noexcept {
+        return !m_handle || m_handle.done();
+    }
+
+    decltype(auto) sync() {
+        //std::cout<<m_handle.promise().latest.address()<<" "<<<<std::endl;
+        while(m_handle.promise().latest && !m_handle.promise().latest.done()) {
+            //std::cout<<m_handle.promise().latest.address()<<std::endl;
+            m_handle.promise().latest.resume();
+        }
+        return m_handle.promise().result();
+    }
+
+    Task(std::coroutine_handle<promise_type> handle) : m_handle(handle) {}
+    std::coroutine_handle<promise_type> m_handle;
+};
+struct final_awaitable {
+    bool await_ready() const noexcept {
+        return false;
+    }
+
+    template<typename PROMISE>
+    std::coroutine_handle<> await_suspend(std::coroutine_handle<PROMISE> coro) noexcept {
+        return coro.promise().m_continuation == nullptr ? std::noop_coroutine() : coro.promise().m_continuation;
+    }
+
     void await_resume() noexcept {}
 };
 
-coro::Task<int> calc1(int i) {
-    co_await Yield();
-    co_await Yield();
-    co_return i + i;
+
+struct TaskPromiseBaseBase {
+    TaskPromiseBaseBase() {
+        root_promise = this;
+    };
+    TaskPromiseBaseBase    *root_promise = nullptr;
+    std::coroutine_handle<> latest = nullptr;
+};
+
+template<typename T>
+struct TaskPromiseBase : public TaskPromiseBaseBase {
+
+public:
+    friend final_awaitable;
+    friend TaskAwaiter<T>;
+    std::suspend_always initial_suspend() {
+        return {};
+    }
+
+    final_awaitable final_suspend() noexcept {
+
+        return final_awaitable{};
+    }
+
+    std::suspend_always yield_value(int) {
+        return {};
+    }
+
+    std::coroutine_handle<> m_continuation = nullptr;
+};
+
+template<typename T>
+struct TaskPromise : public TaskPromiseBase<T> {
+public:
+    TaskPromise(){};
+
+    Task<T> get_return_object() {
+        auto tmp = Task<T>{std::coroutine_handle<TaskPromise<T>>::from_promise(*this)};
+        tmp.m_handle.promise().latest = tmp.m_handle;
+        return tmp;
+    }
+
+    void unhandled_exception() {
+        ::new (static_cast<void *>(std::addressof(m_exception))) std::exception_ptr(std::current_exception());
+        m_state = State::Exception;
+    }
+
+    ~TaskPromise() {
+        if (m_state == State::Value) {
+            m_value.~T();
+        } else if (m_state == State::Exception) {
+            m_exception.~exception_ptr();
+        }
+    }
+
+    T result() {
+        if (m_state == State::Value) {
+            return std::move(m_value);
+        } else if (m_state == State::Exception) {
+            std::rethrow_exception(m_exception);
+        } else {
+
+            throw std::logic_error("Task not ready");
+        }
+    }
+
+    template<typename VALUE, typename = std::enable_if_t<std::is_convertible_v<VALUE &&, T>>>
+    void return_value(VALUE &&value) noexcept(std::is_nothrow_constructible_v<T, VALUE &&>) {
+
+        ::new (static_cast<void *>(std::addressof(m_value))) T(std::forward<VALUE>(value));
+        m_state = State::Value;
+    }
+
+private:
+    enum class State {
+        Empty,
+        Value,
+        Exception,
+    };
+    State m_state = State::Empty;
+
+    union {
+        T                  m_value;
+        std::exception_ptr m_exception = nullptr;
+    };
+};
+
+template<>
+struct TaskPromise<void> : public TaskPromiseBase<void> {
+public:
+    Task<> get_return_object() {
+        auto tmp = Task<>{std::coroutine_handle<TaskPromise<void>>::from_promise(*this)};
+        tmp.m_handle.promise().latest = tmp.m_handle;
+        return tmp;
+    }
+    void return_void() {}
+
+    void unhandled_exception() {
+        m_exception = std::current_exception();
+    }
+
+    ~TaskPromise() = default;
+
+    void result() {
+        if (m_exception)
+            std::rethrow_exception(m_exception);
+    }
+
+private:
+    std::exception_ptr m_exception;
+};
+
+
+template<typename T>
+template<typename U>
+std::coroutine_handle<> TaskAwaiter<T>::await_suspend(std::coroutine_handle<TaskPromise<U>> h) {
+
+    m_handle.promise().m_continuation = h;
+    m_handle.promise().root_promise = h.promise().root_promise;
+    m_handle.promise().root_promise->latest = m_handle;
+
+    //std::cout<<&m_handle.promise()<<" "<<m_handle.promise().root_promise<<std::endl;
+    return m_handle;
 }
 
-coro::Task<int> calc2(int i) {
-    co_await Yield();
-    auto a = co_await calc1(i);
-    co_await Yield();
-    co_return a + a;
+
+template<typename T>
+decltype(auto) TaskAwaiter<T>::await_resume() {
+
+    if (!m_handle.done())
+        throw std::runtime_error("Task not done");
+    m_handle.promise().root_promise->latest = m_handle.promise().m_continuation;
+    return m_handle.promise().result();
 }
 
-coro::Task<int> calc3(int i) {
-    co_await Yield();
-    auto a = co_await calc2(i);
-    co_await Yield();
-    co_return a + a;
-}
+
+//Task<int> ttt() {
+//    std::cout << "111" << std::endl;
+//    co_yield 1;
+//    std::cout << "222" << std::endl;
+//    co_return 1;
+//}
+//
+//Task<int> xxx() {
+//    std::cout << "333" << std::endl;
+//    co_return (co_await ttt()) + (co_await ttt());
+//}
+
+//int main() {
+//    auto xx = xxx();
+//    auto t = xx.sync();
+//    std::cout<<t<<std::endl;
+//}
+
+
+struct Foo {
+    int n = 0;
+    Task<int> get2() {
+        co_yield 1;
+        co_return 4;
+    }
+    Task<int> get1() {
+        co_return co_await get2() * co_await get2();
+    }
+    Task<> test() {
+        auto v = co_await get1();
+        n += v;
+    }
+};
 
 int main() {
-    auto t = calc3(1);
-    tm.coros.push(t.coro);
-    tm();
-    xx::CoutN("r = ", t.Result());
-    return 0;
+    Foo f;
+    auto secs = xx::NowSteadyEpochSeconds();
+    for (int i = 0; i < 10000000; ++i) {
+        auto t = f.test();
+        t.sync();
+    }
+    std::cout << "foo.n = " << f.n << ", secs = " << xx::NowSteadyEpochSeconds(secs) << "\n";
 }
