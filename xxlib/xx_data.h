@@ -525,7 +525,7 @@ namespace xx {
         }
 
         // for fill read data
-        Span GetFreeSpace() const {
+        Span GetFreeRange() const {
             return {buf + len, cap - len};
         }
 
