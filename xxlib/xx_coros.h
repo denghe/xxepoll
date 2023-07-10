@@ -44,6 +44,13 @@ namespace xx {
             this->coros.Emplace(std::forward<CT>(c));
         }
 
+        template<typename F>
+        int AddLambda(F&& f) {
+            return Add([](F f)->CoroType {
+                co_await f();
+            }(std::forward<F>(f)));
+        }
+
         void Clear() {
             this->coros.Clear();
         }
@@ -125,6 +132,19 @@ namespace xx {
             return 0;
         }
 
+        int Add(Task<>&& c) {
+            return Add([](Task<> c)->CoroType {
+                co_await c;
+            }(std::move(c)));
+        }
+
+        template<typename F>
+        int AddLambda(F&& f) {
+            return Add([](F f)->CoroType {
+                co_await f();
+            }(std::forward<F>(f)));
+        }
+
         // match key & store d & resume coro
         // null: dismatch     0: success      !0: error ( need close ? )
         template<typename DT = DataType>
@@ -142,7 +162,7 @@ namespace xx {
         }
 
         // handle condCoros timeout & resume updateCoros
-        int Update() {
+        decltype(auto) operator()() {
             if (!condCoros.Empty()) {
                 auto now = xx::NowSteadyEpochSeconds();
                 for (int i = condCoros.len - 1; i >= 0; --i) {
@@ -166,7 +186,7 @@ namespace xx {
                     }
                 }
             }
-            return 0;
+            return condCoros.len + updateCoros.len;
         }
 
     protected:
@@ -189,5 +209,8 @@ namespace xx {
             return 0;
         }
     };
+
+    template<typename KeyType, typename DataType, int timeoutSecs = 15>
+    using EventTasks = EventCoros<false, KeyType, DataType, timeoutSecs>;
 
 }
