@@ -15,9 +15,9 @@ struct Package {
         return dr.ReadLeftBuf(data);
     }
 };
-using ECoros = xx::EventCoros<false, PkgSerial_t, xx::Data_r>;
-using ECoro = ECoros::CoroType;
-using EArgs = ECoros::Args;
+using Tasks = xx::EventTasks<PkgSerial_t, xx::Data_r>;
+using Task = Tasks::CoroType;
+using Args = Tasks::Args;
 
 template<typename T> concept Has_HandleRequest = requires(T t) { t.HandleRequest(std::declval<Package&>()); };
 template<typename T> concept Has_HandlePush = requires(T t) { t.HandlePush(std::declval<Package&>()); };
@@ -30,17 +30,12 @@ struct NetCtx : xx::net::NetCtxBase<NetCtx> {};
 template<typename Derived>
 struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg<Derived, PkgLen_t, sizeof(PkgLen_t), false> {
 
-    ECoros responseHandlers;
+    Tasks tasks;
     int32_t autoIncSerial = 0;
 
     int32_t GenSerial() {
         autoIncSerial = (autoIncSerial + 1) & 0x7FFFFFFF;
         return autoIncSerial;
-    }
-
-    template<typename CT>
-    int AddECoro(CT&& c) {
-        return responseHandlers.Add(std::forward<CT>(c));
     }
 
     template<typename DataFiller>
@@ -60,17 +55,12 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
         return SendResponse(0, std::forward<DataFiller>(filler));
     }
 
-    /* example:
-    auto [e, serial] = SendRequest( [...](xx::Data& d) { ... d.Write( ... ); } );
-    if (e) { nc->SocketDispose(*this); co_return; }
-    xx::Data_r dr;
-    co_yield EArgs{ serial, dr };
-    */
-    template<typename DataFiller>
-    std::pair<int, PkgSerial_t> SendRequest(DataFiller&& filler) {
-        auto serial = GenSerial();
-        return { SendResponse(-serial, std::forward<DataFiller>(filler)), serial };
-    }
+//    template<typename DataFiller>
+//    std::pair<int, PkgSerial_t> SendRequest(DataFiller&& filler) {
+//        auto serial = GenSerial();
+//        return { SendResponse(-serial, std::forward<DataFiller>(filler)), serial };
+//    }
+    // todo: task version
 
     int OnAccept() {
         xx::CoutN("OnAccept fd = ", fd, " ip = ", addr);
@@ -81,7 +71,7 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
     xx::Task<> RegisterUpdateTask() {
         while(true) {
             co_yield 0;
-            if (int r = responseHandlers.Update()) CoReturn;
+            tasks();    // todo: scan quit co_yield message?
         }
     }
 
@@ -98,7 +88,7 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
             if (pkg.serial == 0) return ((Derived*)this)->HandlePush(pkg);
         }
         // handle response
-        if (auto r = responseHandlers.Trigger(pkg.serial, pkg.data); !r.has_value()) return 0;
+        if (auto r = tasks.Trigger(pkg.serial, pkg.data); !r.has_value()) return 0;
         else return *r;
     }
 
@@ -120,15 +110,15 @@ struct ServerPeer : PeerBase<ServerPeer> {
 };
 
 struct ClientPeer : PeerBase<ClientPeer> {
-    void BeginLogic() { AddECoro(BeginLogic_()); }
-    ECoro BeginLogic_() {
-        auto [e, serial] = SendRequest(  [](xx::Data& d) {
-            d.Write("hello");
-        } );
-        if (e) co_yield e;
-        xx::Data_r dr;
-        co_yield EArgs{ serial, dr };   // cond wait
-        xx::CoutN(dr);
+    void BeginLogic() { tasks.Add(BeginLogic_()); }
+    Task BeginLogic_() {
+//        auto [e, serial] = SendRequest(  [](xx::Data& d) {
+//            d.Write("hello");
+//        } );
+//        if (e) co_yield e;
+//        xx::Data_r dr;
+//        co_yield Args{ serial, dr };   // cond wait
+//        xx::CoutN(dr);
         co_yield -1;    // kill peer
     }
 };
@@ -136,7 +126,7 @@ struct ClientPeer : PeerBase<ClientPeer> {
 int main() {
     NetCtx nc;
     nc.Listen<ServerPeer>(12222);
-    nc.AddTask([](NetCtx& nc)->xx::Task<> {
+    nc.tasks.Add([](NetCtx& nc)->xx::Task<> {
     LabBegin:
         co_yield 0;
         co_yield 0;

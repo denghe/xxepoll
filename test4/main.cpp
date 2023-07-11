@@ -84,7 +84,7 @@ template<size_t reserveLen = 1024 * 256>
 [[nodiscard]] int ReadData(int fd, xx::Data& d) {
 LabBegin:
     d.Reserve(reserveLen);
-    auto span = d.GetFreeSpace();
+    auto span = d.GetFreeRange();
     assert(span.len);
 LabRepeat:
     if (auto n = ::read(fd, span.buf, span.len); n > 0) {

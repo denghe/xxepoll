@@ -36,7 +36,7 @@ int main() {
     nc.Listen<ServerPeer>(12333);
 
     for (int i = 0; i < 2; ++i) {
-        nc.AddTask([](NetCtx& nc)->xx::Task<> {
+        nc.tasks.Add([](NetCtx& nc)->xx::Task<> {
             sockaddr_in6 addr{};
             xx_assert(-1 != xx::net::FillAddress("127.0.0.1", 12333, addr));
         LabRetry:

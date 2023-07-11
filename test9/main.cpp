@@ -32,7 +32,7 @@ struct ClientPeer : PeerBase<ClientPeer> {
 int main() {
     NetCtx nc;
     nc.Listen<ServerPeer>(12222);
-    nc.AddTask([](NetCtx& nc)->xx::Task<> {
+    nc.tasks.Add([](NetCtx& nc)->xx::Task<> {
         LabBegin:
         co_yield 0;
         co_yield 0;
