@@ -1,7 +1,98 @@
 ﻿// minor
 #include "main.h"
+#include <random>
+#include <boost/multi_index_container.hpp>
+#include <boost/multi_index/member.hpp>
+#include <boost/multi_index/mem_fun.hpp>
+#include <boost/multi_index/ordered_index.hpp>
+#include <boost/multi_index/hashed_index.hpp>
+#include <boost/multi_index/ranked_index.hpp>
+using boost::multi_index_container;
+using namespace boost::multi_index;
+
+namespace tags {
+    struct id {};
+    struct gold {};
+}
+
+struct Foo {
+    int id;
+    int64_t gold;
+};
+
+typedef multi_index_container<Foo, indexed_by<
+                                   hashed_unique<tag<tags::id>, BOOST_MULTI_INDEX_MEMBER(Foo, int, id)>,
+ranked_non_unique<tag<tags::gold>, BOOST_MULTI_INDEX_MEMBER(Foo, int64_t, gold)>
+>> Foos;
 
 int main() {
+    std::mt19937 rnd(std::random_device{}());
+    std::uniform_int_distribution<int64_t> goldGen(0, 100000000);
+
+    int n = 1000000;
+
+    std::vector<Foo> users;
+    users.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        users.emplace_back(Foo{i, goldGen(rnd)});
+    }
+
+    Foos ranks;
+    ranks.reserve(n);
+
+    auto tp = std::chrono::steady_clock::now();
+    for (auto& user : users) {
+        ranks.insert(user);
+    }
+
+    std::cout << "insert ms = " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tp).count() << std::endl;
+
+    auto&& ranksId = ranks.get<tags::id>();
+    auto&& ranksGold = ranks.get<tags::gold>();
+
+    tp = std::chrono::steady_clock::now();
+
+    int64_t gold_sum = 0;
+    for (int i = 0; i < n; ++i) {
+        auto iter = ranksGold.nth(i);
+        gold_sum += iter->gold;
+    }
+
+    std::cout << "get foo by nth( rank ) ms = " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tp).count() << std::endl;
+    std::cout << "gold_sum = " << gold_sum << std::endl;
+
+    tp = std::chrono::steady_clock::now();
+
+    int64_t rank_sum = 0;
+    for (int id = 0; id < n; ++id) {
+        rank_sum += ranksGold.rank(ranks.project<tags::gold>(ranksId.find(id)));
+    }
+
+    std::cout << "calc rank by id n times ms = " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tp).count() << std::endl;
+    std::cout << "rank_sum = " << rank_sum << std::endl;
+
+    rank_sum = 0;
+    tp = std::chrono::steady_clock::now();
+    for (int i = 0; i < n; ++i) {
+        auto iter = ranksId.find(9999);
+        ranks.modify(iter, [&](auto& o) { o.gold = goldGen(rnd); });
+        rank_sum += ranksGold.rank(ranks.project<tags::gold>(iter));
+    }
+
+    std::cout << "modify + calc rank 1 user gold n times ms = " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - tp).count() << std::endl;
+    std::cout << "rank_sum = " << rank_sum << std::endl;
+
+    for (int i = 0; i < 10; ++i) {
+        auto iter = ranksId.find(9999);
+        ranks.modify(iter, [&](auto& o) { o.gold = goldGen(rnd); });
+        std::cout << "id = " << iter->id << ", gold = " << iter->gold << ", rank = " << ranksGold.rank(ranks.project<tags::gold>(iter)) << std::endl;
+    }
+
+    for (int id = 0; id < 10; ++id) {
+        auto iter = ranksId.find(id);
+        std::cout << "id = " << iter->id << ", gold = " << iter->gold << ", rank = " << ranksGold.rank(ranks.project<tags::gold>(iter)) << std::endl;
+    }
+
     return 0;
 }
 
