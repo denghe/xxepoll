@@ -71,7 +71,7 @@ CoType func2() {
 }
 
 int main() {
-    xx::ECoros cs;
+    xx::Coros cs;
 
     auto func = [](int b, int e)->CoType {
         CoYield;
