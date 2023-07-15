@@ -24,7 +24,7 @@ int main() {
     NetCtx nc;
 
     for (int i = 0; i < 6; ++i) {
-        nc.AddTask([](NetCtx& nc)->xx::Task<> {
+        nc.tasks.Add([](NetCtx& nc)->xx::Task<> {
             sockaddr_in6 addr{};
             xx_assert(-1 != xx::net::FillAddress("127.0.0.1", 55555, addr));
         LabRetry:

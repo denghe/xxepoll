@@ -292,10 +292,6 @@ namespace xx::net {
         xx::Tasks tasks;
         xx::CondTasks<xx::Weak<Socket<Derived>>> condTasks;
 
-        void AddTask(xx::Task<> &&c) {
-            tasks.Add(std::move(c));
-        }
-
         NetCtxBase() {
             xx_assert(-1 != Create());
         }
