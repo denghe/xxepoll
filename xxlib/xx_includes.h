@@ -205,10 +205,14 @@ inline void Sleep(int const& ms) {
   (_assert(#_Expression,__FILE__,__LINE__),0))
 #endif /* _UNICODE||UNICODE */
 #else
+#ifdef EMSCRIPTEN
+#define xx_assert(x) ((void)((x) || (__assert_fail(#x, __FILE__, __LINE__, __func__),0)))
+#else
 #define xx_assert(expression) (void)(                                                        \
             (!!(expression)) ||                                                              \
             (__assert_fail(#expression, __FILE__, __LINE__, __ASSERT_FUNCTION), 0)           \
         )
+#endif
 #endif
 #endif
 
