@@ -4,5 +4,7 @@
 
 #include <xx_coros.h>
 #include <xx_time.h>
+#include <xx_dict.h>
+#include <xx_ptr.h>
 
 #endif
