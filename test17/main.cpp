@@ -20,15 +20,15 @@ struct Foo {
     };
 };
 
-typedef multi_index_container<Foo, indexed_by<
+typedef multi_index_container<xx::Shared<Foo>, indexed_by<
     ordered_non_unique<tag<ByPlayerId>, BOOST_MULTI_INDEX_MEMBER(Foo, int64_t, playerId)>,
     ordered_non_unique<tag<ByServerId>, BOOST_MULTI_INDEX_MEMBER(Foo, int64_t, serverId)>,
     ordered_non_unique<tag<ByPlayerIdServerId>, BOOST_MULTI_INDEX_CONST_MEM_FUN(Foo, Int64Pair, playerIdServerId)>
->> Foos;
+>> SharedFoos;
 
 int main() {
     int n = 100000, m = 10, s = 50, playerQPS = 1, serverQPS = 10;
-    Foos foos;
+    SharedFoos foos;
 
     auto&& foosPlayerId = foos.get<ByPlayerId>();
     auto&& foosServerId = foos.get<ByServerId>();
@@ -42,7 +42,7 @@ int main() {
     int64_t serverId{};
     for (int i = 0; i < n; ++i) {
         for (int j = 0; j < m; ++j) {
-            foos.emplace(Foo{ .playerId = i, .serverId = serverId });
+            foos.emplace(xx::Make<Foo>(i, serverId));
             if (++serverId >= s) {
                 serverId = 0;
             }
@@ -60,7 +60,7 @@ int main() {
             resultsSize = {};
             for (; iter != end; ++iter) {
                 //results.push_back(&*iter);
-                results += (size_t)&*iter;
+                results += (size_t)iter->pointer;
                 ++resultsSize;
             }
         }
@@ -74,7 +74,7 @@ int main() {
             resultsSize = {};
             for (; iter != end; ++iter) {
                 //results.push_back(&*iter);
-                results += (size_t)&*iter;
+                results += (size_t)iter->pointer;
                 ++resultsSize;
             }
         }
@@ -88,7 +88,7 @@ int main() {
         resultsSize = {};
         for (; iter != end; ++iter) {
             //results.push_back(&*iter);
-            results += (size_t)&*iter;
+            results += (size_t)iter->pointer;
             ++resultsSize;
         }
     }
