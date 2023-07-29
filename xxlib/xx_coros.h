@@ -1,7 +1,5 @@
 ﻿#pragma once
 
-// important: only support static function or lambda !!!  COPY data from arguments !!! do not ref !!!
-
 #include "xx_coro_simple.h"
 #include "xx_task.h"
 
@@ -107,20 +105,18 @@ namespace xx {
     template<typename KeyType, typename DataType>
     using EventYieldType = std::variant<int, EventArgs<KeyType, DataType>>;   // int for yield once
 
-    template<bool trueCoro_falseTask, typename KeyType, typename DataType>
-    using EventCoro = std::conditional_t<trueCoro_falseTask
-            , Coro_<EventYieldType<KeyType, DataType>>
-            , Task<void, EventYieldType<KeyType, DataType>>>;
+    template<typename KeyType, typename DataType>
+    using EventTask = Task<DataType, EventYieldType<KeyType, DataType>>;
 
-    template<bool trueCoro_falseTask, typename KeyType, typename DataType, int timeoutSecs = 15>
-    struct EventCoros {
-        using CoroType = EventCoro<trueCoro_falseTask, KeyType, DataType>;
+    template<typename KeyType, typename DataType, int timeoutSecs = 15>
+    struct EventTasks {
+        using TaskType = EventTask<KeyType, DataType>;
         using Args = EventArgs<KeyType, DataType>;
-        using Tuple = std::tuple<Args, double, CoroType>;
+        using Tuple = std::tuple<Args, double, TaskType>;
         xx::List<Tuple, int> condCoros;
-        xx::List<CoroType, int> updateCoros;
+        xx::List<TaskType, int> updateCoros;
 
-        template<std::convertible_to<CoroType> CT>
+        template<std::convertible_to<TaskType> CT>
         int Add(CT&& c) {
             if (c) return 0;
             auto& y = c.coro.promise().y;
@@ -133,36 +129,35 @@ namespace xx {
         }
 
         int Add(Task<>&& c) {
-            return Add([](Task<> c)->CoroType {
+            return Add([](Task<> c)->TaskType {
                 co_await c;
             }(std::move(c)));
         }
 
         template<typename F>
         int AddLambda(F&& f) {
-            return Add([](F f)->CoroType {
+            return Add([](F f)->TaskType {
                 co_await f();
             }(std::forward<F>(f)));
         }
 
         // match key & store d & resume coro
-        // null: dismatch     0: success      !0: error ( need close ? )
+        // return 0: miss or success
         template<typename DT = DataType>
-        std::optional<int> Trigger(KeyType const& v, DT&& d) {
-            if (condCoros.Empty()) return false;
+        int Trigger(KeyType const& v, DT&& d) {
             for (int i = condCoros.len - 1; i >= 0; --i) {
                 auto& tup = condCoros[i];
                 if (v == std::get<Args>(tup).first) {
                     std::get<Args>(tup).second = std::forward<DT>(d);
-                    if (int r = Resume(i)) return r;
-                    return 0;
+                    return Resume(i);
                 }
             }
-            return {};
+            return 0;
         }
 
         // handle condCoros timeout & resume updateCoros
-        decltype(auto) operator()() {
+        // return 0: success
+        int operator()() {
             if (!condCoros.Empty()) {
                 auto now = xx::NowSteadyEpochSeconds();
                 for (int i = condCoros.len - 1; i >= 0; --i) {
@@ -182,35 +177,38 @@ namespace xx {
                         if (y.index() != 0) {
                             condCoros.Emplace(Tuple{ std::move(std::get<Args>(y)), xx::NowSteadyEpochSeconds() + timeoutSecs, std::move(c) });
                             updateCoros.SwapRemoveAt(i);
-                        } // else y other logic?
+                        } else {
+                            if (auto& r = std::get<int>(y)) return r;
+                        }
                     }
                 }
             }
-            return condCoros.len + updateCoros.len;
+            return 0;
+        }
+
+        operator bool() const {
+            return condCoros.len || updateCoros.len;
         }
 
     protected:
         XX_FORCE_INLINE int Resume(int i) {
             auto& tup = condCoros[i];
             auto& args = std::get<Args>(tup);
-            auto& c = std::get<CoroType>(tup);
+            auto& c = std::get<TaskType>(tup);
             if (c.Resume()) {
-                condCoros.SwapRemoveAt(i);
+                condCoros.SwapRemoveAt(i);  // done
             } else {
                 auto& y = c.coro.promise().y;
-                if (y.index() == 0) {
-                    updateCoros.Emplace(std::move(c));
-                    condCoros.SwapRemoveAt(i);
-                } else if (y.index() == 1) {
+                if (y.index() == 1) {   // renew
                     args = std::move(std::get<Args>(y));
                     std::get<double>(tup) = xx::NowSteadyEpochSeconds() + timeoutSecs;
-                } else return std::get<int>(y);
+                } else {
+                    if (auto& r = std::get<int>(y)) return r;   // yield error number ( != 0 )
+                    updateCoros.Emplace(std::move(c));      // yield 0
+                    condCoros.SwapRemoveAt(i);
+                }
             }
             return 0;
         }
     };
-
-    template<typename KeyType, typename DataType, int timeoutSecs = 15>
-    using EventTasks = EventCoros<false, KeyType, DataType, timeoutSecs>;
-
 }

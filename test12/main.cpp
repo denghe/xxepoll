@@ -16,7 +16,7 @@ struct Package {
     }
 };
 using Tasks = xx::EventTasks<PkgSerial_t, xx::Data_r>;
-using Task = Tasks::CoroType;
+using Task = Tasks::TaskType;
 using Args = Tasks::Args;
 
 template<typename T> concept Has_HandleRequest = requires(T t) { t.HandleRequest(std::declval<Package&>()); };
@@ -30,13 +30,13 @@ struct NetCtx : xx::net::NetCtxBase<NetCtx> {};
 template<typename Derived>
 struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg<Derived, PkgLen_t, sizeof(PkgLen_t), false> {
 
-    Tasks tasks;
     int32_t autoIncSerial = 0;
-
     int32_t GenSerial() {
         autoIncSerial = (autoIncSerial + 1) & 0x7FFFFFFF;
         return autoIncSerial;
     }
+
+    Tasks tasks;
 
     template<typename DataFiller>
     int SendResponse(PkgSerial_t serial, DataFiller&& filler) {
@@ -55,12 +55,15 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
         return SendResponse(0, std::forward<DataFiller>(filler));
     }
 
-//    template<typename DataFiller>
-//    std::pair<int, PkgSerial_t> SendRequest(DataFiller&& filler) {
-//        auto serial = GenSerial();
-//        return { SendResponse(-serial, std::forward<DataFiller>(filler)), serial };
-//    }
-    // todo: task version
+    template<typename DataFiller>
+    Task SendRequest(DataFiller&& filler) {
+        auto serial = GenSerial();
+        if (int r = SendResponse(-serial, std::forward<DataFiller>(filler))) co_yield r;    // let tasks return r
+        xx::Data_r d;
+        co_yield Args{ serial, d };
+        if (!d) co_yield -1;   // let tasks return r
+        co_return d;
+    }
 
     int OnAccept() {
         xx::CoutN("OnAccept fd = ", fd, " ip = ", addr);
@@ -81,17 +84,14 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
         if constexpr(Has_HandleRequest<Derived>) {
             if (pkg.serial < 0) {
                 pkg.serial = -pkg.serial;
-                return ((Derived *) this)->HandleRequest(pkg);
+                return ((Derived *) this)->HandleRequest(pkg);  //
             }
         }
         if constexpr(Has_HandlePush<Derived>) {
-            if (pkg.serial == 0) return ((Derived*)this)->HandlePush(pkg);
+            if (pkg.serial == 0) return ((Derived*)this)->HandlePush(pkg);  //
         }
-        // handle response
-        if (auto r = tasks.Trigger(pkg.serial, pkg.data); !r.has_value()) return 0;
-        else return *r;
+        return tasks.Trigger(pkg.serial, pkg.data); // HandleResponse
     }
-
 };
 
 /**************************************************************************************************************/
@@ -112,14 +112,11 @@ struct ServerPeer : PeerBase<ServerPeer> {
 struct ClientPeer : PeerBase<ClientPeer> {
     void BeginLogic() { tasks.Add(BeginLogic_()); }
     Task BeginLogic_() {
-//        auto [e, serial] = SendRequest(  [](xx::Data& d) {
-//            d.Write("hello");
-//        } );
-//        if (e) co_yield e;
-//        xx::Data_r dr;
-//        co_yield Args{ serial, dr };   // cond wait
-//        xx::CoutN(dr);
-        co_yield -1;    // kill peer
+        auto r = co_await SendRequest([](xx::Data& d) {
+            d.Write("hello");
+        });
+        xx::CoutN(r);
+        co_yield -1;    // kill self
     }
 };
 

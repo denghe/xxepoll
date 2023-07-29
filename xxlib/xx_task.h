@@ -93,14 +93,13 @@ namespace xx {
         decltype(auto) YieldValue() const { return coro.promise().y; }
 
         template<bool runOnce = false>
-        XX_FORCE_INLINE decltype(auto) Run() {
+        XX_FORCE_INLINE void Run() {
             auto& p = coro.promise();
             auto& c = p.last;
             while(c && !c.done()) {
                 c.resume();
                 if constexpr(runOnce) return;
             }
-            if constexpr (!std::is_void_v<R>) return *p.r;
         }
         operator bool() const { return /*!coro ||*/ coro.done(); }
         void operator()() { Run<true>(); }
