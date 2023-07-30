@@ -123,7 +123,7 @@ namespace xx::net {
     // success: return 0
     // < 0 == -errno, need close fd
     template<size_t reserveLen = 1024 * 256, size_t maxLen = 0/*1024 * 1024 * 4*/>
-    [[nodiscard]] int ReadData(int fd, xx::Data &d) {
+    [[nodiscard]] int ReadData(int fd, Data &d) {
         LabBegin:
         d.Reserve(reserveLen);
         auto span = d.GetFreeRange();
@@ -232,7 +232,7 @@ namespace xx::net {
     /*******************************************************************************************************/
     /*******************************************************************************************************/
 
-    using IdxVerType = xx::ListDoubleLinkIndexAndVersion<int, uint>;    // int + uint  for store to  epoll int64 user data
+    using IdxVerType = ListDoubleLinkIndexAndVersion<int, uint>;    // int + uint  for store to  epoll int64 user data
 
     template<typename NetCtxType>
     struct Socket : FdBase {
@@ -242,8 +242,8 @@ namespace xx::net {
         IdxVerType iv;
         sockaddr_in6 addr{};
 
-        void AddCondTaskToNC(xx::Task<> &&c) {
-            nc->condTasks.Add(xx::WeakFromThis(this), std::move(c));
+        void AddCondTaskToNC(Task<> &&c) {
+            nc->condTasks.Add(WeakFromThis(this), std::move(c));
         }
     };
 
@@ -286,11 +286,11 @@ namespace xx::net {
         using Epoll::Epoll;
 
         std::array<epoll_event, 4096> events{}; // tmp epoll events container
-        xx::ListDoubleLink<xx::Shared<Socket<Derived>>, int, uint> sockets;    // listeners + accepted peers container
+        ListDoubleLink<Shared<Socket<Derived>>, int, uint> sockets;    // listeners + accepted peers container
         IdxVerType lastListenerIV;  // for visit all sockets, skip listeners ( Foreach( []{}, Next( iv ) )
 
-        xx::Tasks tasks;
-        xx::CondTasks<xx::Weak<Socket<Derived>>> condTasks;
+        Tasks tasks;
+        CondTasks<Weak<Socket<Derived>>> condTasks;
 
         NetCtxBase() {
             xx_assert(-1 != Create());
@@ -324,7 +324,7 @@ namespace xx::net {
 
         // sockets[s.iv] = move(t)
         template<typename PeerType>
-        void SocketReplace(Socket<Derived> &s, xx::Shared<PeerType> &&t) {
+        void SocketReplace(Socket<Derived> &s, Shared<PeerType> &&t) {
             xx_assert(s.fd != -1);
             xx_assert(s.nc == this);
             xx_assert(sockets[s.iv].pointer == &s);
@@ -341,7 +341,7 @@ namespace xx::net {
             sockets[t->iv] = std::move(t);
         }
 
-        // create listener & listen & return weak
+        // create listener & listen & return socket fd
         template<typename PeerType, class = std::enable_if_t<std::is_base_of_v<Socket<Derived>, PeerType>>>
         int Listen(int port, int sockType = SOCK_STREAM, char const *hostName = {}) {
             int r = MakeListenerSocketFD(port, sockType, hostName);
@@ -351,7 +351,7 @@ namespace xx::net {
             auto iv = sockets.Tail();
             auto rtv = Ctl<EPOLL_CTL_ADD, (uint32_t) EPOLLIN>(r, (void *&) iv);
             xx_assert(!rtv);
-            auto L = xx::Make<ListenerBase<Derived, PeerType>>();
+            auto L = Make<ListenerBase<Derived, PeerType>>();
             SocketFill(*L, r, iv);
             L->OnEvents__ = [](FdBase *s, uint32_t e) { return ((ListenerBase<Derived, PeerType> *) s)->OnEvents(e); };
             c = L;
@@ -360,7 +360,7 @@ namespace xx::net {
         }
 
         template<typename PeerType>
-        xx::Weak<PeerType> MakePeer(int fd_, sockaddr_in6 const &addr) {
+        Weak<PeerType> MakePeer(int fd_, sockaddr_in6 const &addr) {
             auto &c = sockets.Emplace();    // shared ptr container
             auto iv = sockets.Tail();
             xx_assert(Ctl(fd_, (void *&) iv) >= 0);
@@ -403,40 +403,51 @@ namespace xx::net {
             return r;
         }
 
-        template<typename PeerType, typename R = std::pair<int, xx::Weak<PeerType>>>
-        xx::Task<R> Connect(sockaddr_in6 addr, double timeoutSecs) {
+        // error store to errorNumber when rtv is {}
+        template<typename PeerType>
+        Task<Weak<PeerType>> Connect(sockaddr_in6 addr, double timeoutSecs) {
             auto fd = MakeSocketFD();
-            if (fd < 0) co_return R{ fd, {} };
+            if (fd < 0) {
+                errorNumber = -__LINE__;
+                co_return Weak<PeerType>{};
+            }
             if (auto r = connect(fd, (sockaddr *) &addr, sizeof(addr)); r == 0) {
-                co_return R{ 0, MakePeer<PeerType>(fd, addr) };
+                co_return MakePeer<PeerType>(fd, addr); // success
             } else if (auto e = errno; e == EINPROGRESS) {        // r == -1
-                auto secs = xx::NowSteadyEpochSeconds();
+                auto secs = NowSteadyEpochSeconds();
                 auto w = MakePeer<Connector<Derived>>(fd, addr);
                 while (true) {
                     co_yield 0;
-                    if (!w) co_return R{ -88888, {} };   // fd error
+                    if (!w) {
+                        errorNumber = -__LINE__;
+                        co_return Weak<PeerType>{};   // fd error
+                    }
                     if (w->connected) { // success: replace
-                        R rtv;
                         auto hasEpollIn = w->hasEpollIn;
-                        auto s = xx::Make<PeerType>();
-                        rtv.second = s;
+                        auto s = Make<PeerType>();  // success??
+                        auto rtv = s.ToWeak();
                         s->OnEvents__ = [](FdBase *s, uint32_t e) { return ((PeerType *) s)->OnEvents(e); };
                         SocketReplace(*w, std::move(s));
                         if (hasEpollIn) {
-                            if (int rr = rtv.second->OnEvents(EPOLLIN)) {
-                                SocketDispose(*rtv.second);  // log?
-                                rtv.first = rr;
-                                rtv.second.Reset();
+                            if (int rr = rtv->OnEvents(EPOLLIN)) {
+                                SocketDispose(*rtv);  // log?
+                                errorNumber = -__LINE__;
+                                rtv.Reset();
                             }
                         }
                         co_return rtv;
                     }
-                    if (xx::NowSteadyEpochSeconds() - secs > timeoutSecs) { // timeout:
+                    if (NowSteadyEpochSeconds() - secs > timeoutSecs) { // timeout:
                         SocketDispose(*w);
-                        co_return R{ -99999, {} };
+                        errorNumber = -__LINE__;
+                        co_return Weak<PeerType>{};
                     }
                 }
-            } else co_return R{ -errno, {} };
+            } else {
+                // log errno?
+                errorNumber = -__LINE__;
+                co_return Weak<PeerType>{};
+            }
         }
     };
 
@@ -464,7 +475,7 @@ namespace xx::net {
     struct TcpSocket : Socket<NetCtxType> {
         using Socket<NetCtxType>::Socket;
 
-        xx::Queue<xx::DataShared> sents;
+        Queue<DataShared> sents;
         size_t sentsTopOffset{};
 
         // call by events & EPOLLOUT
@@ -490,10 +501,10 @@ namespace xx::net {
                 if (n < 0) return (int) n;
                 assert(b && n < len || !b && n == len);
                 if (b) {
-                    sents.Emplace(xx::Data((char *) buf + n, len - n));
+                    sents.Emplace(Data((char *) buf + n, len - n));
                 }
             } else {
-                sents.Emplace(xx::Data(buf, len));
+                sents.Emplace(Data(buf, len));
             }
             return 0;
         }
@@ -507,7 +518,7 @@ namespace xx::net {
                 if (n < 0) return (int) n;
                 assert(b && n < len || !b && n == len);
                 if (b) {
-                    sents.Emplace(xx::Data((char *) buf + n, len - n));
+                    sents.Emplace(Data((char *) buf + n, len - n));
                 }
             } else {
                 sents.Emplace(std::forward<DataType>(d));
@@ -525,7 +536,7 @@ namespace xx::net {
     template<typename Derived, size_t reserveLen = 1024 * 256, size_t maxLen = 0>
     struct PartialCodes_OnEvents_Base {
 
-        xx::Data recv;  // received data container
+        Data recv;  // received data container
 
         int OnEvents(uint32_t e) {
             if (e & EPOLLERR || e & EPOLLHUP) return -888;    // fatal error

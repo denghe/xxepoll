@@ -124,13 +124,13 @@ int main() {
     NetCtx nc;
     nc.Listen<ServerPeer>(12222);
     nc.tasks.Add([](NetCtx& nc)->xx::Task<> {
+        auto a = xx::net::ToAddress("127.0.0.1", 12222);
     LabBegin:
         co_yield 0;
         co_yield 0;
-        auto [r, w] = co_await nc.Connect<ClientPeer>(xx::net::ToAddress("127.0.0.1", 12222), 3);
-        if (r) goto LabBegin;
-        xx_assert(w);
-        w->BeginLogic();
+        if (auto w = co_await nc.Connect<ClientPeer>(a, 3)) {
+            w->BeginLogic();
+        } else goto LabBegin;
     }(nc));
     for(int i = 2; i > 1; i = nc.RunOnce(1)) {
         xx::CoutN(i);
