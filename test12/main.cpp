@@ -16,7 +16,6 @@ struct Package {
     }
 };
 using Tasks = xx::EventTasks<PkgSerial_t, xx::Data_r>;
-using Task = Tasks::TaskType;
 using Args = Tasks::Args;
 
 template<typename T> concept Has_HandleRequest = requires(T t) { t.HandleRequest(std::declval<Package&>()); };
@@ -56,11 +55,12 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
     }
 
     template<typename DataFiller>
-    Task SendRequest(DataFiller&& filler) {
+    xx::Task<xx::Data_r> SendRequest(DataFiller&& filler) {
         auto serial = GenSerial();
         if (int r = SendResponse(-serial, std::forward<DataFiller>(filler))) co_yield r;    // let tasks return r
         xx::Data_r d;
-        co_yield Args{ serial, d };
+        Args a{ serial, d };
+        co_yield &a;
         if (!d) co_yield -1;   // let tasks return r
         co_return d;
     }
@@ -111,7 +111,7 @@ struct ServerPeer : PeerBase<ServerPeer> {
 
 struct ClientPeer : PeerBase<ClientPeer> {
     void BeginLogic() { tasks.Add(BeginLogic_()); }
-    Task BeginLogic_() {
+    xx::Task<> BeginLogic_() {
         auto r = co_await SendRequest([](xx::Data& d) {
             d.Write("hello");
         });

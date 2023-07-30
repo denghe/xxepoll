@@ -102,41 +102,27 @@ namespace xx {
     template<typename KeyType, typename DataType>
     using EventArgs = std::pair<KeyType, DataType&>;
 
-    template<typename KeyType, typename DataType>
-    using EventYieldType = std::variant<int, EventArgs<KeyType, DataType>>;   // int for yield once
-
-    template<typename KeyType, typename DataType>
-    using EventTask = Task<DataType, EventYieldType<KeyType, DataType>>;
-
     template<typename KeyType, typename DataType, int timeoutSecs = 15>
     struct EventTasks {
-        using TaskType = EventTask<KeyType, DataType>;
         using Args = EventArgs<KeyType, DataType>;
-        using Tuple = std::tuple<Args, double, TaskType>;
+        using Tuple = std::tuple<Args, double, Task<>>;
         xx::List<Tuple, int> condCoros;
-        xx::List<TaskType, int> updateCoros;
+        xx::List<Task<>, int> updateCoros;
 
-        template<std::convertible_to<TaskType> CT>
-        int Add(CT&& c) {
-            if (c) return 0;
+        template<std::convertible_to<Task<>> T>
+        void Add(T&& c) {
+            if (c) return;
             auto& y = c.coro.promise().y;
             if (y.index() == 0) {
-                updateCoros.Emplace(std::forward<CT>(c));
-            } else if (y.index() == 1) {
-                condCoros.Emplace(std::move(std::get<Args>(y)), xx::NowSteadyEpochSeconds() + timeoutSecs, std::forward<CT>(c) );
-            } else if (y.index() == 2) return std::get<int>(y);
-            return 0;
-        }
-
-        int Add(Task<>&& c) {
-            return Add([](Task<> c)->TaskType {
-                co_await c;
-            }(std::move(c)));
+                updateCoros.Emplace(std::forward<T>(c));
+            } else {
+                condCoros.Emplace(std::move(std::get<Args>(y)), xx::NowSteadyEpochSeconds() + timeoutSecs, std::forward<T>(c) );
+            };
         }
 
         template<typename F>
-        int AddLambda(F&& f) {
-            return Add([](F f)->TaskType {
+        void AddLambda(F&& f) {
+            Add([](F f)->Task<> {
                 co_await f();
             }(std::forward<F>(f)));
         }
@@ -194,7 +180,7 @@ namespace xx {
         XX_FORCE_INLINE int Resume(int i) {
             auto& tup = condCoros[i];
             auto& args = std::get<Args>(tup);
-            auto& c = std::get<TaskType>(tup);
+            auto& c = std::get<Task<>>(tup);
             if (c.Resume()) {
                 condCoros.SwapRemoveAt(i);  // done
             } else {
