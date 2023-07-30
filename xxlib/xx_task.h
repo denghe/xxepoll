@@ -1,7 +1,11 @@
 ﻿#pragma once
-// important: only support static function or lambda !!!  COPY data from arguments !!! do not ref !!!
 
 #include "xx_typetraits.h"
+#include "xx_time.h"
+#include "xx_list.h"
+#include "xx_listlink.h"
+#include <xx_dict.h>
+#include <xx_ptr.h>
 
 namespace xx {
     template<typename R = void>
@@ -55,6 +59,9 @@ namespace xx {
             void return_void() noexcept {}
         };
     }
+
+    /*************************************************************************************************************************/
+    /*************************************************************************************************************************/
 
     template<typename R>
     struct [[nodiscard]] Task {
@@ -113,4 +120,190 @@ namespace xx {
 
     template<typename R>
     struct IsPod<Task<R>> : std::true_type {};
+
+    /*************************************************************************************************************************/
+    /*************************************************************************************************************************/
+
+    template<typename WeakType>
+    struct TasksBase {
+        ListLink<std::pair<WeakType, Task<>>, int32_t> tasks;
+    };
+
+    template<>
+    struct TasksBase<void> {
+        ListLink<Task<>, int32_t> tasks;
+    };
+
+    template<typename WeakType>
+    struct Tasks_ : TasksBase<WeakType> {
+        Tasks_(Tasks_ const&) = delete;
+        Tasks_& operator=(Tasks_ const&) = delete;
+        Tasks_(Tasks_&&) noexcept = default;
+        Tasks_& operator=(Tasks_&&) noexcept = default;
+        explicit Tasks_(int32_t cap = 8) {
+            this->tasks.Reserve(cap);
+        }
+
+        template<typename WT, typename CT>
+        void Add(WT&& w, CT&& c) {
+            if (!w || c) return;
+            this->tasks.Emplace(std::pair<WeakType, Task<>> { std::forward<WT>(w), std::forward<CT>(c) });
+        }
+
+        template<typename CT>
+        void Add(CT&& c) {
+            if (c) return;
+            this->tasks.Emplace(std::forward<CT>(c));
+        }
+
+        template<typename F>
+        int AddLambda(F&& f) {
+            return Add([](F f)->Task<> {
+                co_await f();
+            }(std::forward<F>(f)));
+        }
+
+        void Clear() {
+            this->tasks.Clear();
+        }
+
+        int32_t operator()() {
+            int prev = -1, next{};
+            for (auto idx = this->tasks.head; idx != -1;) {
+                auto& o = this->tasks[idx];
+                bool needRemove;
+                if constexpr(std::is_void_v<WeakType>) {
+                    needRemove = o.Resume();
+                } else {
+                    needRemove = !o.first || o.second.Resume();
+                }
+                if (needRemove) {
+                    next = this->tasks.Remove(idx, prev);
+                } else {
+                    next = this->tasks.Next(idx);
+                    prev = idx;
+                }
+                idx = next;
+            }
+            return this->tasks.Count();
+        }
+
+        [[nodiscard]] int32_t Count() const {
+            return this->tasks.Count();
+        }
+
+        [[nodiscard]] bool Empty() const {
+            return !this->tasks.Count();
+        }
+
+        void Reserve(int32_t cap) {
+            this->tasks.Reserve(cap);
+        }
+    };
+
+    using Tasks = Tasks_<void>;
+
+    template<typename WeakType>
+    using CondTasks = Tasks_<WeakType>;
+
+    /*************************************************************************************************************************/
+    /*************************************************************************************************************************/
+
+    template<typename KeyType = int, int timeoutSecs = 15>
+    struct EventTasks {
+        using YieldArgs = std::pair<KeyType, void*>;
+        using Tuple = std::tuple<KeyType, void*, double, Task<>>;
+        List<Tuple, int> eventTasks;
+        List<Task<>, int> tasks;
+
+        template<std::convertible_to<Task<>> T>
+        void Add(T&& c) {
+            if (c) return;
+            auto& y = c.coro.promise().y;
+            if (y.index() == 0) {
+                tasks.Emplace(std::forward<T>(c));
+            } else {
+                auto yt = (YieldArgs*)std::get<1>(y);
+                eventTasks.Emplace(yt->first, yt->second, NowSteadyEpochSeconds() + timeoutSecs, std::forward<T>(c) );
+            };
+        }
+
+        template<typename F>
+        void AddLambda(F&& f) {
+            Add([](F f)->Task<> {
+                co_await f();
+            }(std::forward<F>(f)));
+        }
+
+        // match key & handle args & resume coro
+        // void(*Handler)( void* ) = [???](auto p) { *(T*)p = ???; }
+        // return 0: miss or success
+        template<typename Handler>
+        int operator()(KeyType const& v, Handler&& h) {
+            for (int i = eventTasks.len - 1; i >= 0; --i) {
+                auto& t = eventTasks[i];
+                if (v == std::get<0>(t)) {
+                    h(std::get<1>(t));
+                    return Resume(i, t);
+                }
+            }
+            return 0;
+        }
+
+        // handle eventTasks timeout & resume tasks
+        // return 0: success
+        int operator()() {
+            if (!eventTasks.Empty()) {
+                auto now = NowSteadyEpochSeconds();
+                for (int i = eventTasks.len - 1; i >= 0; --i) {
+                    auto& t = eventTasks[i];
+                    if (std::get<2>(t) < now) {
+                        if (int r = Resume(i, t)) return r;
+                    }
+                }
+            }
+            if (!tasks.Empty()) {
+                for (int i = tasks.len - 1; i >= 0; --i) {
+                    if (auto& c = tasks[i]; c.Resume()) {
+                        tasks.SwapRemoveAt(i);
+                    } else {
+                        auto& y = c.coro.promise().y;
+                        if (y.index() != 0) {
+                            auto yt = (YieldArgs*)std::get<1>(y);
+                            eventTasks.Emplace(Tuple{ yt->first, yt->second, NowSteadyEpochSeconds() + timeoutSecs, std::move(c) });
+                            tasks.SwapRemoveAt(i);
+                        } else {
+                            if (auto& r = std::get<0>(y)) return r;
+                        }
+                    }
+                }
+            }
+            return 0;
+        }
+
+        operator bool() const {
+            return eventTasks.len || tasks.len;
+        }
+
+    protected:
+        XX_FORCE_INLINE int Resume(int i, Tuple& t) {
+            auto& c = std::get<3>(t);
+            if (c.Resume()) {
+                eventTasks.SwapRemoveAt(i);  // done
+            } else {
+                auto& y = c.coro.promise().y;
+                if (y.index() == 1) {           // renew
+                    auto yt = (YieldArgs*)std::get<1>(y);
+                    std::get<0>(t) = yt->first;
+                    std::get<1>(t) = yt->second;
+                    std::get<2>(t) = NowSteadyEpochSeconds() + timeoutSecs;
+                } else {
+                    if (auto& r = std::get<int>(y)) return r;   // yield error number ( != 0 )
+                    tasks.Emplace(std::move(c));      // yield 0
+                    eventTasks.SwapRemoveAt(i);
+                }
+            }
+            return 0;
+        }
+    };
 }
