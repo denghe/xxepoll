@@ -453,6 +453,42 @@ namespace xx {
         return (Shared<U>&)*this;
     }
 
+    /************************************************************************************/
+
+    // generic store weak ptrs ( for managers )
+    struct WeakBase {
+        PtrHeaderBase *h = nullptr;
+        WeakBase() = default;
+        template<typename U>
+        WeakBase(Weak<U> &&o) noexcept {
+            static_assert(std::is_base_of_v<PtrHeaderBase, typename Weak<U>::HeaderType>);
+            h = o.h;
+            o.h = nullptr;
+        }
+        WeakBase(bool b/* true */) noexcept {
+            (ssize_t&)h = b ? 1 : 0;    // for operator bool() return true
+        }
+        WeakBase(WeakBase const&) = delete;
+        WeakBase& operator=(WeakBase const&) = delete;
+        WeakBase(WeakBase &&o) noexcept : h(std::exchange(o.h, nullptr)) {}
+        WeakBase& operator=(WeakBase &&o) noexcept {
+            std::swap(h, o.h);
+            return *this;
+        }
+        ~WeakBase() {
+            if ((ssize_t&)h > 1) {
+                if (h->weakCount == 1 && h->sharedCount == 0) {
+                    free(h);
+                } else {
+                    --h->weakCount;
+                }
+                h = nullptr;
+            }
+        }
+        operator bool() const noexcept {
+            return (ssize_t&)h == 1 || h && h->sharedCount;
+        }
+    };
 
     /************************************************************************************/
     // helpers

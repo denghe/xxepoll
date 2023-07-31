@@ -150,6 +150,13 @@ namespace xx {
             this->tasks.Emplace(std::pair<WeakType, Task<>> { std::forward<WT>(w), std::forward<CT>(c) });
         }
 
+        template<typename WT, typename F>
+        void AddLambda(WT&& w, F&& f) {
+            Add(std::forward<WT>(w), [](F f)->Task<> {
+                co_await f();
+            }(std::forward<F>(f)));
+        }
+
         template<typename CT>
         void Add(CT&& c) {
             if (c) return;
@@ -157,8 +164,8 @@ namespace xx {
         }
 
         template<typename F>
-        int AddLambda(F&& f) {
-            return Add([](F f)->Task<> {
+        void AddLambda(F&& f) {
+            Add([](F f)->Task<> {
                 co_await f();
             }(std::forward<F>(f)));
         }
@@ -174,6 +181,12 @@ namespace xx {
                 bool needRemove;
                 if constexpr(std::is_void_v<WeakType>) {
                     needRemove = o.Resume();
+                } else if constexpr(IsOptional_v<WeakType>) {
+                    if (o.first.has_value()) {
+                        needRemove = !o.first.value() || o.second.Resume();
+                    } else {
+                        needRemove = o.second.Resume();
+                    }
                 } else {
                     needRemove = !o.first || o.second.Resume();
                 }
@@ -205,6 +218,8 @@ namespace xx {
 
     template<typename WeakType>
     using CondTasks = Tasks_<WeakType>;
+
+    using WeakTasks = Tasks_<WeakBase>;
 
     /*************************************************************************************************************************/
     /*************************************************************************************************************************/
