@@ -238,18 +238,14 @@ namespace xx {
     template<int timeoutSecs = 15>
     struct EventTasks {
         using Tuple = std::tuple<ssize_t, void*, double, Task<>>;
-        List<Tuple, int> eventTasks;
         List<Task<>, int> tasks;
+        List<Tuple, int> eventTasks;
 
         template<std::convertible_to<Task<>> T>
         void Add(T&& t) {
-            if (t) return;
-            auto& y = t.coro.promise().y;
-            if (!y.p) {
-                tasks.Emplace(std::forward<T>(t));
-            } else {
-                eventTasks.Emplace(y.v, y.p, NowSteadyEpochSeconds() + timeoutSecs, std::forward<T>(t) );
-            };
+            xx_assert(!t);
+            xx_assert(!t.coro.promise().y.p);
+            tasks.Emplace(std::forward<T>(t));
         }
 
         template<typename F>

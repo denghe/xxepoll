@@ -15,7 +15,6 @@ struct Package {
         return dr.ReadLeftBuf(data);
     }
 };
-using YieldArgs = xx::EventTasks<>::YieldArgs;
 
 template<typename T> concept Has_HandleRequest = requires(T t) { t.HandleRequest(std::declval<Package&>()); };
 template<typename T> concept Has_HandlePush = requires(T t) { t.HandlePush(std::declval<Package&>()); };
@@ -58,8 +57,7 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
         auto serial = GenSerial();
         if (int r = SendResponse(-serial, std::forward<DataFiller>(filler))) co_yield r;    // let tasks return r
         xx::Data_r d;
-        YieldArgs a{ serial, &d };
-        co_yield &a;
+        co_yield { serial, &d };
         co_return d;
     }
 
@@ -88,8 +86,7 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
             if (pkg.serial == 0) return ((Derived*)this)->HandlePush(pkg);  //
         }
         return tasks(pkg.serial, [&pkg](auto p){    // HandleResponse
-            auto ya = *(YieldArgs*)p;
-            *(xx::Data_r*)(ya.second) = pkg.data;
+            *(xx::Data_r*)p = pkg.data;
         });
     }
 };
@@ -107,19 +104,21 @@ int main() {
             if (auto w = co_await nc.Connect<ClientPeer>(a, 10)) {
                 auto p = &*w;
                 xx::CoutN("fd = ", p->fd, " Connected");
-                nc.tasks.AddLambda(w, [p]() -> xx::Task<> {
-                    while(!p->tasks()) co_yield 0;
+                nc.tasks.AddLambda(w, [&nc, p]() -> xx::Task<> {
+                    while (!p->tasks()) co_yield 0;      // task executor
+                    nc.SocketDispose(*p);   // kill peer
                 });
                 p->tasks.AddLambda([&nc, p]() -> xx::Task<> {
-                    auto r = co_await p->SendRequest([](xx::Data &d) {
+                    auto dr = co_await p->SendRequest([](xx::Data &d) {
                         d.Write("hello");
                     });
-                    xx::CoutN("fd = ", p->fd, " SendRequest( hello ) return = ", r);
-                    nc.SocketDispose(*p);   // kill client peer immediately
+                    xx::CoutN("fd = ", p->fd, " SendRequest( hello ) return dr = ", dr);
+                    co_yield -1;    // let task executor kill peer
                 });
                 break;
+            } else {
+                xx::CoutN("Connect failed. retry ...");
             }
-            xx::CoutN("Connect failed. retry ...");
         }
     });
     while(nc.RunOnce(1)) {

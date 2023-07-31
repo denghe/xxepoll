@@ -15,7 +15,6 @@ struct Package {
         return dr.ReadLeftBuf(data);
     }
 };
-using YieldArgs = xx::EventTasks<>::YieldArgs;
 
 template<typename T> concept Has_HandleRequest = requires(T t) { t.HandleRequest(std::declval<Package&>()); };
 template<typename T> concept Has_HandlePush = requires(T t) { t.HandlePush(std::declval<Package&>()); };
@@ -58,8 +57,7 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
         auto serial = GenSerial();
         if (int r = SendResponse(-serial, std::forward<DataFiller>(filler))) co_yield r;    // let tasks return r
         xx::Data_r d;
-        YieldArgs a{ serial, &d };
-        co_yield &a;
+        co_yield { serial, &d };
         co_return d;
     }
 
@@ -88,7 +86,7 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
             if (pkg.serial == 0) return ((Derived*)this)->HandlePush(pkg);  //
         }
         return tasks(pkg.serial, [&pkg](auto p){    // HandleResponse
-            *(xx::Data_r*)(((YieldArgs*)p)->second) = pkg.data;
+            *(xx::Data_r*)p = pkg.data;
         });
     }
 };
