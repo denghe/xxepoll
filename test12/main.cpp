@@ -44,7 +44,7 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
         d.Write(serial);
         filler(d);
         d.WriteFixedAt(0, PkgLen_t(d.len - sizeof(PkgLen_t))); // len does not contain self
-        xx::CoutN("Send d = ", d);
+        xx::CoutN("fd = ", fd, " Send d = ", d);
         return Send(std::move(d));
     }
 
@@ -60,12 +60,11 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
         xx::Data_r d;
         YieldArgs a{ serial, &d };
         co_yield &a;
-        if (!d) co_yield -1;   // let tasks return r
         co_return d;
     }
 
     int OnAccept() {
-        xx::CoutN("OnAccept fd = ", fd, " ip = ", addr);
+        xx::CoutN("fd = ", fd, " OnAccept ip = ", addr);
         AddCondTaskToNC(RegisterUpdateTask());
         return 0;
     }
@@ -89,52 +88,43 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
             if (pkg.serial == 0) return ((Derived*)this)->HandlePush(pkg);  //
         }
         return tasks(pkg.serial, [&pkg](auto p){    // HandleResponse
-            *(xx::Data_r*)(((YieldArgs*)p)->second) = pkg.data;
+            auto ya = *(YieldArgs*)p;
+            *(xx::Data_r*)(ya.second) = pkg.data;
         });
     }
 };
 
 /**************************************************************************************************************/
 
-struct ServerPeer : PeerBase<ServerPeer> {
-    int HandleRequest(Package& pkg) {
-        std::string msg;
-        if (int r = pkg.data.Read(msg)) return r;
-        if (msg == "hello") {
-            SendResponse(pkg.serial, [&](xx::Data& d){
-                d.Write("world");
-            });
-        }
-        return 0;
-    }
-};
-
-struct ClientPeer : PeerBase<ClientPeer> {
-    void BeginLogic() { tasks.Add(BeginLogic_()); }
-    xx::Task<> BeginLogic_() {
-        auto r = co_await SendRequest([](xx::Data& d) {
-            d.Write("hello");
-        });
-        xx::CoutN(r);
-        co_yield -1;    // kill self
-    }
-};
+struct ClientPeer : PeerBase<ClientPeer> {};
 
 int main() {
     NetCtx nc;
-    nc.Listen<ServerPeer>(12222);
-    nc.tasks.Add([](NetCtx& nc)->xx::Task<> {
+    nc.tasks.AddLambda([&]()->xx::Task<> {
         auto a = xx::net::ToAddress("127.0.0.1", 12222);
-    LabBegin:
-        co_yield 0;
-        co_yield 0;
-        if (auto w = co_await nc.Connect<ClientPeer>(a, 3)) {
-            w->BeginLogic();
-        } else goto LabBegin;
-    }(nc));
-    for(int i = 2; i > 1; i = nc.RunOnce(1)) {
-        xx::CoutN(i);
+        while (true) {
+            co_yield 0;
+            if (auto w = co_await nc.Connect<ClientPeer>(a, 10)) {
+                auto p = &*w;
+                xx::CoutN("fd = ", p->fd, " Connected");
+                nc.tasks.AddLambda(w, [p]() -> xx::Task<> {
+                    while(!p->tasks()) co_yield 0;
+                });
+                p->tasks.AddLambda([&nc, p]() -> xx::Task<> {
+                    auto r = co_await p->SendRequest([](xx::Data &d) {
+                        d.Write("hello");
+                    });
+                    xx::CoutN("fd = ", p->fd, " SendRequest( hello ) return = ", r);
+                    nc.SocketDispose(*p);   // kill client peer immediately
+                });
+                break;
+            }
+            xx::CoutN("Connect failed. retry ...");
+        }
+    });
+    while(nc.RunOnce(1)) {
         std::this_thread::sleep_for(0.5s);
     }
+    xx::CoutN("end");
     return 0;
 }

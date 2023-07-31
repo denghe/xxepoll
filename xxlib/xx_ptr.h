@@ -462,8 +462,14 @@ namespace xx {
         template<typename U>
         WeakHolder(Weak<U> &&o) noexcept {
             static_assert(std::is_base_of_v<PtrHeaderBase, typename Weak<U>::HeaderType>);
-            h = o.h;
-            o.h = nullptr;
+            h = std::exchange(o.h, nullptr);
+        }
+        template<typename U>
+        WeakHolder(Weak<U> const&o) noexcept {
+            static_assert(std::is_base_of_v<PtrHeaderBase, typename Weak<U>::HeaderType>);
+            if ((h = o.h)) {
+                ++o.h->weakCount;
+            }
         }
         template<typename U>
         WeakHolder(Shared<U> &o) noexcept : WeakHolder(o.ToWeak()) {}

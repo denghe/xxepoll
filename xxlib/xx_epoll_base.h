@@ -243,7 +243,7 @@ namespace xx::net {
         sockaddr_in6 addr{};
 
         void AddCondTaskToNC(Task<> &&c) {
-            nc->condTasks.Add(WeakFromThis(this), std::move(c));
+            nc->tasks.Add(WeakFromThis(this), std::move(c));
         }
     };
 
@@ -289,8 +289,7 @@ namespace xx::net {
         ListDoubleLink<Shared<Socket<Derived>>, int, uint> sockets;    // listeners + accepted peers container
         IdxVerType lastListenerIV;  // for visit all sockets, skip listeners ( Foreach( []{}, Next( iv ) )
 
-        Tasks tasks;
-        CondTasks<Weak<Socket<Derived>>> condTasks;
+        OptWeakTasks tasks;
 
         NetCtxBase() {
             xx_assert(-1 != Create());
@@ -396,7 +395,6 @@ namespace xx::net {
         int RunOnce(int timeoutMS) {
             int r = Wait(timeoutMS);
             r += tasks();
-            r += condTasks();
             if constexpr (Has_OnRunOnce<Derived>) {
                 r += ((Derived*)this)->OnRunOnce();
             }
@@ -539,6 +537,7 @@ namespace xx::net {
         Data recv;  // received data container
 
         int OnEvents(uint32_t e) {
+            xx::CoutN("fd = ", ((Derived*)this)->fd, " OnEvents e = ", e);
             if (e & EPOLLERR || e & EPOLLHUP) return -888;    // fatal error
             if (e & EPOLLOUT) {
                 if (int r = ((Derived*)this)->Send()) return r;
@@ -560,6 +559,7 @@ namespace xx::net {
 
         int OnEventsIn() {
             auto& recv = ((Derived*)this)->recv;
+            xx::CoutN("fd = ", ((Derived*)this)->fd, " OnEventsIn recv = ", recv);
             size_t offset = 0;
             while (offset + sizeofLen <= recv.len) {
                 auto len = ReadPackageLen<LenType, sizeofLen>(recv.buf + offset);

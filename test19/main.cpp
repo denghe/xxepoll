@@ -17,12 +17,12 @@ int main() {
     auto foo = xx::Make<Foo>();
     {
         xx::OptWeakTasks wt;
-        wt.AddLambda([]()->xx::Task<>{
+        wt.Add([]()->xx::Task<>{
             for (int i = 0;; ++i) {
                 std::cout << "step " << i << std::endl;
                 co_yield 0;
             }
-        }); // always resume
+        }()); // always resume
         wt.Add(foo, foo->Update()); // if (weak foo) resume
         wt();
         wt();

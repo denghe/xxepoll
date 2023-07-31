@@ -8,6 +8,16 @@
 #include <xx_ptr.h>
 
 namespace xx {
+    struct YieldType {
+        ssize_t v;
+        void* p;
+        YieldType() : v(0), p(nullptr) {}
+        YieldType(ssize_t v) : v(v), p(nullptr) {}
+        YieldType(ssize_t v, void* p) : v(v), p(p) {}
+        YieldType(YieldType const&) = default;
+        YieldType& operator=(YieldType const&) = default;
+    };
+
     template<typename R = void>
     struct Task;
 
@@ -16,7 +26,7 @@ namespace xx {
         struct PromiseBase {
             std::coroutine_handle<> prev, last;
             PromiseBase *root{ this };
-            std::variant<int, void*> y; // any ??? more type support ?
+            YieldType y;
 
             struct FinalAwaiter {
                 bool await_ready() const noexcept { return false; }
@@ -32,12 +42,7 @@ namespace xx {
                 tmp.coro.promise().last = tmp.coro;
                 return tmp;
             }
-            template<typename P, class = std::enable_if_t<std::is_pointer_v<P>>>
-            std::suspend_always yield_value(P const& p) {
-                root->y = (void*)p;
-                return {};
-            }
-            std::suspend_always yield_value(int v) {
+            std::suspend_always yield_value(YieldType v) {
                 root->y = v;
                 return {};
             }
@@ -144,26 +149,26 @@ namespace xx {
             this->tasks.Reserve(cap);
         }
 
-        template<typename WT, typename CT>
-        void Add(WT&& w, CT&& c) {
-            if (!w || c) return;
-            this->tasks.Emplace(std::pair<WeakType, Task<>> { std::forward<WT>(w), std::forward<CT>(c) });
+        template<typename W, typename T>
+        void Add(W&& w, T&& t) {
+            if (!w || t) return;
+            this->tasks.Emplace(std::pair<WeakType, Task<>> { std::forward<W>(w), std::forward<T>(t) });
         }
 
-        template<typename WT, typename F>
-        void AddLambda(WT&& w, F&& f) {
-            Add(std::forward<WT>(w), [](F f)->Task<> {
+        template<typename W, typename F>
+        void AddLambda(W&& w, F&& f) {
+            Add(std::forward<W>(w), [](F f)->Task<> {
                 co_await f();
             }(std::forward<F>(f)));
         }
 
-        template<typename CT>
-        void Add(CT&& c) {
-            if (c) return;
+        template<typename T>
+        void Add(T&& t) {
+            if (t) return;
             if constexpr(IsOptional_v<WeakType>) {
-                this->tasks.Emplace(std::pair<WeakType, Task<>> { WeakType{}, std::forward<CT>(c) });
+                this->tasks.Emplace(std::pair<WeakType, Task<>> { WeakType{}, std::forward<T>(t) });
             } else {
-                this->tasks.Emplace(std::forward<CT>(c));
+                this->tasks.Emplace(std::forward<T>(t));
             }
         }
 
@@ -230,22 +235,20 @@ namespace xx {
     /*************************************************************************************************************************/
     /*************************************************************************************************************************/
 
-    template<typename KeyType = int, int timeoutSecs = 15>
+    template<int timeoutSecs = 15>
     struct EventTasks {
-        using YieldArgs = std::pair<KeyType, void*>;
-        using Tuple = std::tuple<KeyType, void*, double, Task<>>;
+        using Tuple = std::tuple<ssize_t, void*, double, Task<>>;
         List<Tuple, int> eventTasks;
         List<Task<>, int> tasks;
 
         template<std::convertible_to<Task<>> T>
-        void Add(T&& c) {
-            if (c) return;
-            auto& y = c.coro.promise().y;
-            if (y.index() == 0) {
-                tasks.Emplace(std::forward<T>(c));
+        void Add(T&& t) {
+            if (t) return;
+            auto& y = t.coro.promise().y;
+            if (!y.p) {
+                tasks.Emplace(std::forward<T>(t));
             } else {
-                auto yt = (YieldArgs*)std::get<1>(y);
-                eventTasks.Emplace(yt->first, yt->second, NowSteadyEpochSeconds() + timeoutSecs, std::forward<T>(c) );
+                eventTasks.Emplace(y.v, y.p, NowSteadyEpochSeconds() + timeoutSecs, std::forward<T>(t) );
             };
         }
 
@@ -260,7 +263,7 @@ namespace xx {
         // void(*Handler)( void* ) = [???](auto p) { *(T*)p = ???; }
         // return 0: miss or success
         template<typename Handler>
-        int operator()(KeyType const& v, Handler&& h) {
+        ssize_t operator()(ssize_t const& v, Handler&& h) {
             for (int i = eventTasks.len - 1; i >= 0; --i) {
                 auto& t = eventTasks[i];
                 if (v == std::get<0>(t)) {
@@ -273,28 +276,27 @@ namespace xx {
 
         // handle eventTasks timeout & resume tasks
         // return 0: success
-        int operator()() {
+        ssize_t operator()() {
             if (!eventTasks.Empty()) {
                 auto now = NowSteadyEpochSeconds();
                 for (int i = eventTasks.len - 1; i >= 0; --i) {
                     auto& t = eventTasks[i];
                     if (std::get<2>(t) < now) {
-                        if (int r = Resume(i, t)) return r;
+                        if (auto r = Resume(i, t)) return r;
                     }
                 }
             }
             if (!tasks.Empty()) {
                 for (int i = tasks.len - 1; i >= 0; --i) {
-                    if (auto& c = tasks[i]; c.Resume()) {
+                    if (auto& t = tasks[i]; t.Resume()) {
                         tasks.SwapRemoveAt(i);
                     } else {
-                        auto& y = c.coro.promise().y;
-                        if (y.index() != 0) {
-                            auto yt = (YieldArgs*)std::get<1>(y);
-                            eventTasks.Emplace(Tuple{ yt->first, yt->second, NowSteadyEpochSeconds() + timeoutSecs, std::move(c) });
+                        auto& y = t.coro.promise().y;
+                        if (y.p) {
+                            eventTasks.Emplace(Tuple{ y.v, y.p, NowSteadyEpochSeconds() + timeoutSecs, std::move(t) });
                             tasks.SwapRemoveAt(i);
                         } else {
-                            if (auto& r = std::get<0>(y)) return r;
+                            if (y.v) return y.v;
                         }
                     }
                 }
@@ -307,20 +309,19 @@ namespace xx {
         }
 
     protected:
-        XX_FORCE_INLINE int Resume(int i, Tuple& t) {
-            auto& c = std::get<3>(t);
-            if (c.Resume()) {
+        XX_FORCE_INLINE ssize_t Resume(int i, Tuple& tuple) {
+            auto& task = std::get<3>(tuple);
+            if (task.Resume()) {
                 eventTasks.SwapRemoveAt(i);  // done
             } else {
-                auto& y = c.coro.promise().y;
-                if (y.index() == 1) {           // renew
-                    auto yt = (YieldArgs*)std::get<1>(y);
-                    std::get<0>(t) = yt->first;
-                    std::get<1>(t) = yt->second;
-                    std::get<2>(t) = NowSteadyEpochSeconds() + timeoutSecs;
+                auto& y = task.coro.promise().y;
+                if (y.p) {           // renew
+                    std::get<0>(tuple) = y.v;
+                    std::get<1>(tuple) = y.p;
+                    std::get<2>(tuple) = NowSteadyEpochSeconds() + timeoutSecs;
                 } else {
-                    if (auto& r = std::get<int>(y)) return r;   // yield error number ( != 0 )
-                    tasks.Emplace(std::move(c));      // yield 0
+                    if (y.v) return y.v;   // yield error number ( != 0 )
+                    tasks.Emplace(std::move(task));      // yield 0
                     eventTasks.SwapRemoveAt(i);
                 }
             }
