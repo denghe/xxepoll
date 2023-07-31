@@ -456,27 +456,27 @@ namespace xx {
     /************************************************************************************/
 
     // generic store weak ptrs ( for managers )
-    struct WeakBase {
+    struct WeakHolder {
         PtrHeaderBase *h = nullptr;
-        WeakBase() = default;
+
         template<typename U>
-        WeakBase(Weak<U> &&o) noexcept {
+        WeakHolder(Weak<U> &&o) noexcept {
             static_assert(std::is_base_of_v<PtrHeaderBase, typename Weak<U>::HeaderType>);
             h = o.h;
             o.h = nullptr;
         }
-        WeakBase(bool b/* true */) noexcept {
-            (ssize_t&)h = b ? 1 : 0;    // for operator bool() return true
-        }
-        WeakBase(WeakBase const&) = delete;
-        WeakBase& operator=(WeakBase const&) = delete;
-        WeakBase(WeakBase &&o) noexcept : h(std::exchange(o.h, nullptr)) {}
-        WeakBase& operator=(WeakBase &&o) noexcept {
+        template<typename U>
+        WeakHolder(Shared<U> &o) noexcept : WeakHolder(o.ToWeak()) {}
+        WeakHolder() = default;
+        WeakHolder(WeakHolder const&) = delete;
+        WeakHolder& operator=(WeakHolder const&) = delete;
+        WeakHolder(WeakHolder &&o) noexcept : h(std::exchange(o.h, nullptr)) {}
+        WeakHolder& operator=(WeakHolder &&o) noexcept {
             std::swap(h, o.h);
             return *this;
         }
-        ~WeakBase() {
-            if ((ssize_t&)h > 1) {
+        ~WeakHolder() {
+            if (h) {
                 if (h->weakCount == 1 && h->sharedCount == 0) {
                     free(h);
                 } else {
@@ -486,7 +486,7 @@ namespace xx {
             }
         }
         operator bool() const noexcept {
-            return (ssize_t&)h == 1 || h && h->sharedCount;
+            return h && h->sharedCount;
         }
     };
 

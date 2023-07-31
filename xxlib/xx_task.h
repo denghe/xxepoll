@@ -160,7 +160,11 @@ namespace xx {
         template<typename CT>
         void Add(CT&& c) {
             if (c) return;
-            this->tasks.Emplace(std::forward<CT>(c));
+            if constexpr(IsOptional_v<WeakType>) {
+                this->tasks.Emplace(std::pair<WeakType, Task<>> { WeakType{}, std::forward<CT>(c) });
+            } else {
+                this->tasks.Emplace(std::forward<CT>(c));
+            }
         }
 
         template<typename F>
@@ -219,7 +223,9 @@ namespace xx {
     template<typename WeakType>
     using CondTasks = Tasks_<WeakType>;
 
-    using WeakTasks = Tasks_<WeakBase>;
+    using WeakTasks = Tasks_<WeakHolder>;
+
+    using OptWeakTasks = Tasks_<std::optional<WeakHolder>>;
 
     /*************************************************************************************************************************/
     /*************************************************************************************************************************/
