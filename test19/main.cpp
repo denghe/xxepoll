@@ -22,8 +22,8 @@ int main() {
                 std::cout << "step " << i << std::endl;
                 co_yield 0;
             }
-        }()); // always resume
-        wt.Add(foo, foo->Update()); // if (weak foo) resume
+        }); // always resume
+        wt.AddTask(foo, foo->Update()); // if (weak foo) resume
         wt();
         wt();
         foo.Reset();    // kill foo immediately

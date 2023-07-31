@@ -241,10 +241,6 @@ namespace xx::net {
         NetCtxType *nc{};
         IdxVerType iv;
         sockaddr_in6 addr{};
-
-        void AddCondTaskToNC(Task<> &&c) {
-            nc->tasks.Add(WeakFromThis(this), std::move(c));
-        }
     };
 
     template<typename NetCtxType>
@@ -277,6 +273,7 @@ namespace xx::net {
     };
 
     template<typename T> concept Has_OnAccept = requires(T t) { t.OnAccept(); };
+    template<typename T> concept Has_OnConnect = requires(T t) { t.OnConnect(); };
     template<typename T> concept Has_OnUpdate = requires(T t) { t.OnUpdate(); };
     template<typename T> concept Has_OnRunOnce = requires(T t) { t.OnRunOnce(); };
 
@@ -410,7 +407,12 @@ namespace xx::net {
                 co_return Weak<PeerType>{};
             }
             if (auto r = connect(fd, (sockaddr *) &addr, sizeof(addr)); r == 0) {
-                co_return MakePeer<PeerType>(fd, addr); // success
+                auto w = MakePeer<PeerType>(fd, addr);
+                if constexpr (Has_OnConnect<PeerType>) {
+                    if (w)
+                        w->OnConnect();
+                }
+                co_return w; // success
             } else if (auto e = errno; e == EINPROGRESS) {        // r == -1
                 auto secs = NowSteadyEpochSeconds();
                 auto w = MakePeer<Connector<Derived>>(fd, addr);
@@ -426,6 +428,9 @@ namespace xx::net {
                         auto rtv = s.ToWeak();
                         s->OnEvents__ = [](FdBase *s, uint32_t e) { return ((PeerType *) s)->OnEvents(e); };
                         SocketReplace(*w, std::move(s));
+                        if constexpr (Has_OnConnect<PeerType>) {
+                            rtv->OnConnect();
+                        }
                         if (hasEpollIn) {
                             if (int rr = rtv->OnEvents(EPOLLIN)) {
                                 SocketDispose(*rtv);  // log?

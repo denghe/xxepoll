@@ -63,7 +63,13 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
 
     int OnAccept() {
         xx::CoutN("fd = ", fd, " OnAccept ip = ", addr);
-        AddCondTaskToNC(RegisterUpdateTask());
+        nc->tasks.AddTask(xx::WeakFromThis(this), RegisterUpdateTask());
+        return 0;
+    }
+
+    int OnConnect() {
+        xx::CoutN("fd = ", fd, " OnConnect");
+        nc->tasks.AddTask(xx::WeakFromThis(this), RegisterUpdateTask());
         return 0;
     }
 
@@ -71,6 +77,7 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
         while(!tasks()) {
             co_yield 0;
         }
+        nc->SocketDispose(*this);
     }
 
     int OnEventsPkg(xx::Data_r dr) {

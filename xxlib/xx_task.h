@@ -150,20 +150,20 @@ namespace xx {
         }
 
         template<typename W, typename T>
-        void Add(W&& w, T&& t) {
+        void AddTask(W&& w, T&& t) {
             if (!w || t) return;
             this->tasks.Emplace(std::pair<WeakType, Task<>> { std::forward<W>(w), std::forward<T>(t) });
         }
 
         template<typename W, typename F>
-        void AddLambda(W&& w, F&& f) {
-            Add(std::forward<W>(w), [](F f)->Task<> {
+        void Add(W&& w, F&& f) {
+            AddTask(std::forward<W>(w), [](F f)->Task<> {
                 co_await f();
             }(std::forward<F>(f)));
         }
 
         template<typename T>
-        void Add(T&& t) {
+        void AddTask(T&& t) {
             if (t) return;
             if constexpr(IsOptional_v<WeakType>) {
                 this->tasks.Emplace(std::pair<WeakType, Task<>> { WeakType{}, std::forward<T>(t) });
@@ -173,8 +173,8 @@ namespace xx {
         }
 
         template<typename F>
-        void AddLambda(F&& f) {
-            Add([](F f)->Task<> {
+        void Add(F&& f) {
+            AddTask([](F f)->Task<> {
                 co_await f();
             }(std::forward<F>(f)));
         }
@@ -242,15 +242,15 @@ namespace xx {
         List<Tuple, int> eventTasks;
 
         template<std::convertible_to<Task<>> T>
-        void Add(T&& t) {
+        void AddTask(T&& t) {
             xx_assert(!t);
             xx_assert(!t.coro.promise().y.p);
             tasks.Emplace(std::forward<T>(t));
         }
 
         template<typename F>
-        void AddLambda(F&& f) {
-            Add([](F f)->Task<> {
+        void Add(F&& f) {
+            AddTask([](F f)->Task<> {
                 co_await f();
             }(std::forward<F>(f)));
         }

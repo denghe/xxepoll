@@ -63,7 +63,13 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
 
     int OnAccept() {
         xx::CoutN("fd = ", fd, " OnAccept ip = ", addr);
-        AddCondTaskToNC(RegisterUpdateTask());
+        nc->tasks.AddTask(xx::WeakFromThis(this), RegisterUpdateTask());
+        return 0;
+    }
+
+    int OnConnect() {
+        xx::CoutN("fd = ", fd, " OnConnect");
+        nc->tasks.AddTask(xx::WeakFromThis(this), RegisterUpdateTask());
         return 0;
     }
 
@@ -71,6 +77,7 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
         while(!tasks()) {
             co_yield 0;
         }
+        nc->SocketDispose(*this);
     }
 
     int OnEventsPkg(xx::Data_r dr) {
@@ -93,35 +100,31 @@ struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg
 
 /**************************************************************************************************************/
 
-struct ClientPeer : PeerBase<ClientPeer> {};
+struct ClientPeer : PeerBase<ClientPeer> {
+    void Go() { tasks.AddTask(Go_()); }
+    xx::Task<> Go_() {
+        auto dr = co_await SendRequest([](xx::Data &d) {
+            d.Write("hello");
+        });
+        xx::CoutN("fd = ", fd, " SendRequest return = ", dr);
+        co_yield -1;    // let task executor kill peer
+    }
+};
 
 int main() {
     NetCtx nc;
-    nc.tasks.AddLambda([&]()->xx::Task<> {
+    nc.tasks.Add([&]()->xx::Task<> {
         auto a = xx::net::ToAddress("127.0.0.1", 12222);
         while (true) {
             co_yield 0;
             if (auto w = co_await nc.Connect<ClientPeer>(a, 10)) {
-                auto p = &*w;
-                xx::CoutN("fd = ", p->fd, " Connected");
-                nc.tasks.AddLambda(w, [&nc, p]() -> xx::Task<> {
-                    while (!p->tasks()) co_yield 0;      // task executor
-                    nc.SocketDispose(*p);   // kill peer
-                });
-                p->tasks.AddLambda([&nc, p]() -> xx::Task<> {
-                    auto dr = co_await p->SendRequest([](xx::Data &d) {
-                        d.Write("hello");
-                    });
-                    xx::CoutN("fd = ", p->fd, " SendRequest( hello ) return dr = ", dr);
-                    co_yield -1;    // let task executor kill peer
-                });
+                w->Go();
                 break;
-            } else {
-                xx::CoutN("Connect failed. retry ...");
             }
+            xx::CoutN("Connect failed. retry ...");
         }
     });
-    while(nc.RunOnce(1)) {
+    while (nc.RunOnce(1)) {
         std::this_thread::sleep_for(0.5s);
     }
     xx::CoutN("end");
