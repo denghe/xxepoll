@@ -48,7 +48,7 @@ struct ClientPeer : PeerBase<ClientPeer> {
         auto dr = co_await SendRequest([](xx::Data &d) {
             d.Write("hello");
         });
-        xx::CoutN("fd = ", fd, " SendRequest return = ", dr);
+        xx::CoutN("fd = ", fd, " SendRequest return data = ", dr);
         co_yield -1;    // let task executor kill peer
     }
 };

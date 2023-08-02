@@ -11,14 +11,7 @@ struct ServerPeer : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_SendReques
         return 0;
     }
     int HandleRequest(Package& pkg) {
-        std::string msg;
-        if (int r = pkg.data.Read(msg)) return r;
-        if (msg == "hello") {
-            SendResponse(pkg.serial, [&](xx::Data& d){
-                d.Write("world");
-            });
-        }
-        return 0;
+        return SendResponse(pkg.serial, pkg.data);  // echo back
     }
 };
 

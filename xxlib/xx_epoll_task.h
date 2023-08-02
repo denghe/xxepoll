@@ -660,15 +660,18 @@ namespace xx::net {
             return autoIncSerial;
         }
 
-        template<typename DataFiller
-                , typename PkgSerial_t = typename Package::SerialType
-                        , typename PkgLen_t = typename Package::LenType>
-        int SendResponse(PkgSerial_t serial, DataFiller&& filler) {
+        template<typename DataFiller>
+        int SendResponse(typename Package::SerialType serial, DataFiller&& filler) {
+            using PkgLen_t = typename Package::LenType;
             xx::Data d(((Derived*)this)->GetReserveLen());
             d.Clear();
             d.WriteJump(sizeof(PkgLen_t));
             d.Write(serial);
-            filler(d);
+            if constexpr(xx::IsLambda_v<DataFiller>) {
+                filler(d);
+            } else {
+                d.Write(filler);
+            }
             d.WriteFixedAt(0, PkgLen_t(d.len - sizeof(PkgLen_t))); // len does not contain self
             xx::CoutN("fd = ", ((Derived*)this)->fd, " Send d = ", d);
             return ((Derived*)this)->Send(std::move(d));
