@@ -586,6 +586,36 @@ namespace xx::net {
     /*******************************************************************************************************/
     /*******************************************************************************************************/
 
+    template<typename NetCtxType>
+    struct TaskTcpSocket : TcpSocket<NetCtxType> {
+        using TcpSocket<NetCtxType>::TcpSocket;
+        xx::EventTasks<> tasks;
+    };
+
+    template<typename Derived, typename TaskTcpSocketPeer>
+    struct NetCtxTaskBase : xx::net::NetCtxBase<Derived> {
+        xx::List<xx::Weak<TaskTcpSocketPeer>, int> taskPeers;
+        int OnRunOnce() {
+            if (auto c = taskPeers.len) {
+                for(int i = c - 1; i >= 0; --i) {
+                    if (auto& w = taskPeers[i]) {
+                        if (w->tasks()) {
+                            xx_assert(w);
+                            this->SocketDispose(*w);
+                            taskPeers.SwapRemoveAt(i);
+                        }
+                    } else {
+                        taskPeers.SwapRemoveAt(i);
+                    }
+                }
+            }
+            return taskPeers.len;
+        }
+    };
+
+    /*******************************************************************************************************/
+    /*******************************************************************************************************/
+
     template<typename T, typename Package> concept Has_HandleRequest = requires(T t) { t.HandleRequest(std::declval<Package&>()); };
     template<typename T, typename Package> concept Has_HandlePush = requires(T t) { t.HandlePush(std::declval<Package&>()); };
     template<typename T> concept Has_tasks = requires(T t) { t.tasks; };

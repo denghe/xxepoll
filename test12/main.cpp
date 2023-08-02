@@ -1,48 +1,19 @@
 ﻿// test split & combine package & event request ( client )
 #include "main.h"
 
-// package struct declare
+// package struct declare ( same with server )
 using Package = xx::net::PackageBase<uint32_t, int32_t, sizeof(uint32_t), false, 512, 0>;
 
 struct NetCtx;
-struct TaskPeer : xx::net::TcpSocket<NetCtx> {
-    xx::EventTasks<> tasks;
-};
+using PeerBase = xx::net::TaskTcpSocket<NetCtx>;    // contain tasks
+struct NetCtx : xx::net::NetCtxTaskBase<NetCtx, PeerBase> {};   // contain taskPeers
 
-template<typename Derived>
-struct PeerBase : TaskPeer, xx::net::PartialCodes_SendRequest<Derived, Package> {
+struct ClientPeer : PeerBase, xx::net::PartialCodes_SendRequest<ClientPeer, Package> {
     int OnConnect() {
         xx::CoutN("fd = ", fd, " OnConnect");
-        ((Derived*)this)->nc->taskPeers.Add(xx::WeakFromThis(this));
+        nc->taskPeers.Add(xx::WeakFromThis(this));
         return 0;
     }
-};
-
-struct NetCtx : xx::net::NetCtxBase<NetCtx> {
-    xx::List<xx::Weak<TaskPeer>, int> taskPeers;
-    int OnRunOnce() {
-        if (auto c = taskPeers.len) {
-            for(int i = c - 1; i >= 0; --i) {
-                if (auto& w = taskPeers[i]) {
-                    if (w->tasks()) {
-                                xx_assert(w);
-                        SocketDispose(*w);
-                        w.Reset();
-                        taskPeers.SwapRemoveAt(i);
-                    }
-                } else {
-                    taskPeers.SwapRemoveAt(i);
-                }
-            }
-        }
-        return taskPeers.len;
-    }
-};
-
-/**************************************************************************************************************/
-/**************************************************************************************************************/
-
-struct ClientPeer : PeerBase<ClientPeer> {
     void Go() { tasks.AddTask(Go_()); }
     xx::Task<> Go_() {
         auto dr = co_await SendRequest([](xx::Data &d) {
