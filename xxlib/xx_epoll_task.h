@@ -539,7 +539,7 @@ namespace xx::net {
     template<typename Derived, size_t reserveLen = 1024 * 256, size_t maxLen = 0>
     struct PartialCodes_OnEvents_Base {
 
-        Data recv;  // received data container
+        xx::Data recv;
 
         int OnEvents(uint32_t e) {
             //xx::CoutN("fd = ", ((Derived*)this)->fd, " OnEvents e = ", e);
@@ -548,7 +548,7 @@ namespace xx::net {
                 if (int r = ((Derived*)this)->Send()) return r;
             }
             if (e & EPOLLIN) {
-                if (int r = xx::net::ReadData<reserveLen, maxLen>(((Derived*)this)->fd, recv)) return r;
+                if (int r = xx::net::ReadData<reserveLen, maxLen>(((Derived*)this)->fd, ((Derived*)this)->recv)) return r;
                 if (int r = ((Derived*)this)->OnEventsIn()) return r;
             }
             return 0;
@@ -580,6 +580,114 @@ namespace xx::net {
             }
             recv.RemoveFront(offset);
             return 0;
+        }
+    };
+
+    /*******************************************************************************************************/
+    /*******************************************************************************************************/
+
+    template<typename T, typename Package> concept Has_HandleRequest = requires(T t) { t.HandleRequest(std::declval<Package&>()); };
+    template<typename T, typename Package> concept Has_HandlePush = requires(T t) { t.HandlePush(std::declval<Package&>()); };
+    template<typename T> concept Has_tasks = requires(T t) { t.tasks; };
+
+    template<typename PkgLen_t = uint32_t, typename Serial_t = int32_t, size_t lenSize_ = 4, bool lenContainSelf_ = false, size_t reserveLen_ = 1024 * 256, size_t maxLen_ = 0>
+    struct PackageBase {
+        using LenType = PkgLen_t;
+        using SerialType = Serial_t;
+        constexpr static const size_t lenSize = lenSize_;
+        constexpr static const bool lenContainSelf = lenContainSelf_;
+        constexpr static const size_t reserveLen = reserveLen_;
+        constexpr static const size_t maxLen = maxLen_;
+        PkgLen_t pkgLen{};
+        Serial_t serial{};
+        Data_r data;
+    };
+
+    template<typename>
+    struct IsPackageBase : std::false_type {};
+    template<typename PkgLen_t, typename Serial_t, size_t lenSize_, bool lenContainSelf_, size_t reserveLen_, size_t maxLen_>
+    struct IsPackageBase<PackageBase<PkgLen_t, Serial_t, lenSize_, lenContainSelf_, reserveLen_, maxLen_>> : std::true_type {};
+    template<typename PkgLen_t, typename Serial_t, size_t lenSize_, bool lenContainSelf_, size_t reserveLen_, size_t maxLen_>
+    struct IsPackageBase<PackageBase<PkgLen_t, Serial_t, lenSize_, lenContainSelf_, reserveLen_, maxLen_>&> : std::true_type {};
+    template<typename PkgLen_t, typename Serial_t, size_t lenSize_, bool lenContainSelf_, size_t reserveLen_, size_t maxLen_>
+    struct IsPackageBase<PackageBase<PkgLen_t, Serial_t, lenSize_, lenContainSelf_, reserveLen_, maxLen_> const&> : std::true_type {};
+    template<typename T>
+    constexpr bool IsPackageBase_v = IsPackageBase<T>::value;
+
+}   // xx::net
+namespace xx {
+    template<typename T>
+    struct DataFuncs<T, std::enable_if_t<::xx::net::IsPackageBase_v<T>>> {
+        static inline int Read(Data_r &d, T &out) {
+            if (int r = d.ReadFixed(out.pkgLen)) return r; // fixed len
+            if (int r = d.Read(out.serial)) return r; // var len
+            return d.ReadLeftBuf(out.data);
+        }
+    };
+}   // xx
+namespace xx::net {
+
+    // for send push, request, response package data
+    // Derived interface: xx::EventTasks<> tasks;
+    template<typename Derived, typename Package>
+    struct PartialCodes_SendRequest : PartialCodes_OnEvents_Pkg<Derived
+            , typename Package::LenType, Package::lenSize, Package::lenContainSelf, Package::reserveLen, Package::maxLen>  {
+
+        // interface for PartialCodes_OnEvents_Pkg
+        int OnEventsPkg(xx::Data_r dr) {
+            Package pkg;
+            if (int r = dr.Read(pkg)) return r;
+            if constexpr(Has_HandleRequest<Derived, Package>) {
+                if (pkg.serial < 0) {
+                    pkg.serial = -pkg.serial;
+                    return ((Derived *) this)->HandleRequest(pkg);  //
+                }
+            }
+            if constexpr(Has_HandlePush<Derived, Package>) {
+                if (pkg.serial == 0) return ((Derived*)this)->HandlePush(pkg);  //
+            }
+            if constexpr(Has_tasks<Derived>) {
+                return ((Derived *) this)->tasks(pkg.serial, [&pkg](auto p) {    // HandleResponse
+                    *(xx::Data_r *) p = pkg.data;
+                });
+            } else return 0;    // ignore response
+        }
+
+        // for send request key generate
+        int32_t autoIncSerial = 0;
+        int32_t GenSerial() {
+            autoIncSerial = (autoIncSerial + 1) & 0x7FFFFFFF;
+            return autoIncSerial;
+        }
+
+        template<typename DataFiller
+                , typename PkgSerial_t = typename Package::SerialType
+                        , typename PkgLen_t = typename Package::LenType>
+        int SendResponse(PkgSerial_t serial, DataFiller&& filler) {
+            xx::Data d(((Derived*)this)->GetReserveLen());
+            d.Clear();
+            d.WriteJump(sizeof(PkgLen_t));
+            d.Write(serial);
+            filler(d);
+            d.WriteFixedAt(0, PkgLen_t(d.len - sizeof(PkgLen_t))); // len does not contain self
+            xx::CoutN("fd = ", ((Derived*)this)->fd, " Send d = ", d);
+            return ((Derived*)this)->Send(std::move(d));
+        }
+
+        template<typename DataFiller>
+        int SendPush(DataFiller&& filler) {
+            return SendResponse(0, std::forward<DataFiller>(filler));
+        }
+
+        template<typename DataFiller>
+        xx::Task<xx::Data_r> SendRequest(DataFiller&& filler) {
+            auto serial = GenSerial();
+            if (int r = SendResponse(-serial, std::forward<DataFiller>(filler))) {
+                co_yield r;    // let tasks return r
+            }
+            xx::Data_r d;
+            co_yield { serial, &d };    // let tasks move task to wait serial container
+            co_return d;
         }
     };
 }
