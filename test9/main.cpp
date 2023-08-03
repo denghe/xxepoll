@@ -18,8 +18,6 @@ struct ServerPeer : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_SendReques
 int main() {
     NetCtx nc;
     nc.Listen<ServerPeer>(12222);
-    while (true) {
-        nc.RunOnce(1);
-    }
+    nc.Run();
     return 0;
 }
