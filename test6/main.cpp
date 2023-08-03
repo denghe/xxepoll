@@ -1,9 +1,9 @@
-﻿// shared version ( server + client )
+﻿// simple echo server with performance test
 
 #include "main.h"
 
 struct NetCtx : xx::net::NetCtxBase<NetCtx> {
-    size_t counter{};
+    int64_t counter{};
 };
 
 template<typename Derived>
@@ -21,37 +21,15 @@ struct ServerPeer : PeerBase<ServerPeer> {
     }
 };
 
-struct ClientPeer : PeerBase<ClientPeer> {
-    ~ClientPeer() { xx::CoutN("ClientPeer ~ClientPeer."); }
-
-    int OnEventsIn() {
-        xx_assert(recv.len == 1);
-        recv.Clear();
-        return Send((void*)"a", 1); // repeat send
-    }
-};
-
 int main() {
     NetCtx nc;
-    nc.Listen<ServerPeer>(12333);
-
-    for (int i = 0; i < 2; ++i) {
-        nc.tasks.AddTask([](NetCtx& nc)->xx::Task<> {
-            sockaddr_in6 addr{};
-            xx_assert(-1 != xx::net::FillAddress("127.0.0.1", 12333, addr));
-        LabRetry:
-            xx::CoutN("********************************************************* begin connect.");
-            co_yield 0;
-            co_yield 0;
-            auto w = co_await nc.Connect<ClientPeer>(addr, 3);
-            if (!w) goto LabRetry;
-            xx::CoutN("********************************************************* connected.");
-            w->Send((void *) "a", 1);   // send first data
-        }(nc));
-    }
-
-    double secs = xx::NowSteadyEpochSeconds(), timePool{};
-    while (nc.RunOnce(1)) {
+    auto fd = nc.Listen<ServerPeer>(12345);
+    xx::CoutN("listener 12345 fd = ", fd);
+    fd = nc.Listen<ServerPeer>(55555);
+    xx::CoutN("listener 55555 fd = ", fd);
+    auto secs = xx::NowSteadyEpochSeconds();
+    double timePool{};
+    while(nc.RunOnce(1)) {
         if (timePool += xx::NowSteadyEpochSeconds(secs); timePool > 1.) {
             timePool -= 1;
             xx::CoutN("counter = ", nc.counter);

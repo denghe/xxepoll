@@ -1,4 +1,5 @@
-﻿#include <coroutine>
+﻿// friend's task code
+#include <coroutine>
 #include <cstdint>
 #include <exception>
 #include <functional>

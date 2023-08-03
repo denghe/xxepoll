@@ -1,4 +1,5 @@
-﻿// minor
+﻿// minor tests ( need boost )
+
 #include "main.h"
 #include <random>
 #include <boost/multi_index_container.hpp>

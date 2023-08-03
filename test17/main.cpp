@@ -1,4 +1,4 @@
-﻿// minor
+﻿// minor tests 2
 #include "main.h"
 #include <boost/multi_index_container.hpp>
 #include <boost/multi_index/member.hpp>

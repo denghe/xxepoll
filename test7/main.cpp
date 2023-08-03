@@ -1,4 +1,4 @@
-﻿// shared version ( client )
+﻿// simple echo client with performance test
 
 #include "main.h"
 

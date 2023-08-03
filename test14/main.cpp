@@ -1,108 +1,80 @@
-﻿// test Task without manager
+﻿// FuncCache
+
 #include "main.h"
 
-struct Foo {
-    int n = 0;
-    xx::Task<int> get2() {
-        co_yield 1;
-        co_return 4;    // todo: fix
-    }
-    xx::Task<int> get1() {
-        co_return co_await get2() * co_await get2();
-    }
-    xx::Task<> test() {
-        auto v = co_await get1();
-        n += v;
-    }
-};
+namespace xx {
 
-int main() {
-    for (int j = 0; j < 10; ++j) {
-        Foo f;
-        auto secs = xx::NowSteadyEpochSeconds();
-        for (int i = 0; i < 10000000; ++i) {
-            f.test().Run();
+    template<typename KeyType, typename DataType, int timeoutSecs = 15>
+    struct FuncCache {
+        using Callback = std::function<int(DataType)>;
+        xx::List<std::tuple<KeyType, double, Callback>, int> values;
+
+        // CB example: [](DataType const& d)->int { ... }
+        template<typename K, typename CB, class = std::enable_if_t<std::convertible_to<CB, Callback>>>
+        void Add(K&& key, CB&& cb) {
+            values.Add(std::tuple<KeyType, double, Callback>{
+                    std::forward<K>(key), xx::NowSteadyEpochSeconds() + timeoutSecs, std::forward<CB>(cb) } );
         }
-        std::cout << "foo.n = " << f.n << ", secs = " << xx::NowSteadyEpochSeconds(secs) << "\n";
-    }
+
+        // match key & call func
+        // null: dismatch     0: success      !0: error ( need close ? )
+        template<typename DT, class = std::enable_if_t<std::convertible_to<DT, DataType>>>
+        std::optional<int> Trigger(KeyType const& k, DT&& d) {
+            if (values.Empty()) return false;
+            for (int i = values.len - 1; i >= 0; --i) {
+                auto &tup = values[i];
+                if (k == std::get<KeyType>(tup)) {
+                    if (int r = std::get<Callback>(tup)(std::forward<DT>(d))) return r;
+                    values.SwapRemoveAt(i);
+                    return 0;
+                }
+            }
+            return {};
+        }
+
+        // handle timeout
+        // 0: success      !0: error ( need close ? )
+        int Update() {
+            if (values.Empty()) return 0;
+            auto now = xx::NowSteadyEpochSeconds();
+            for (int i = values.len - 1; i >= 0; --i) {
+                auto &tup = values[i];
+                if (std::get<double>(tup) < now) {
+                    if (int r = std::get<Callback>(tup)({})) return r;
+                    values.SwapRemoveAt(i);
+                }
+            }
+            return 0;
+        }
+
+        // all timeout
+        void AllTimeout() {
+            if (values.Empty()) return;
+            for (int i = values.len - 1; i >= 0; --i) {
+                std::get<Callback>(values[i])({});
+            }
+        }
+    };
 }
 
-
-//int main() {
-//    auto t = []()->Task<int>{
-//        std::cout << "before co_yield 1" << std::endl;
-//        co_yield 1;
-//        std::cout << "before co_yield 2" << std::endl;
-//        co_yield 2;
-//        std::cout << "before co_return 123" << std::endl;
-//        co_return 123;
-//    }();
-//    for (int i = 0;; ++i) {
-//        if (t()) break;
-//        std::cout << "i = " << i << std::endl;
-//    }
-//    std::cout << "t = " << t.Result() << std::endl;
-//    return 0;
-//}
-
-
-
-
-
-
-
-/*
-struct monster {
-    bool alive = true;
-    awaitable update(std::shared_ptr<monster> memholder) {
-        while( alive ) {
-            co_await yield{};
-        }
-    }
-};
-struct player {
-    std::weak_ptr<monster> target;
-};
 int main() {
-    auto m = std::make_shared<monster>();
-    co_spawn( m->update(m) );
-    auto p = std::make_shared<player>();
-    p->target = m;
-    // ...
-    m.alive = false;
-    m.reset();
-    // ... wait m coroutine quit? m dispose?
-    if (auto m = p->target.lock()) {
-        if (m->alive) {
-            // ...
-        }
-    }
+    xx::FuncCache<uint8_t, xx::Data_r, 2> fc;
+    fc.Add(1, [](xx::Data_r d)->int {
+        xx::CoutN("1 d = ", d);
+        return 0;
+    });
+    fc.Add(5, [](xx::Data_r d)->int {
+        xx::CoutN("5 d = ", d);
+        return 0;
+    });
+    xx::CoutN("add. fc.values.len == ", fc.values.len);
+    fc.Update();
+    xx::CoutN("update. fc.values.len == ", fc.values.len);
+    auto d = xx::Data::From({2,1,2});
+    fc.Trigger(1, d);
+    xx::CoutN("call. fc.values.len == ", fc.values.len);
+    Sleep(3000);
+    fc.Update();
+    xx::CoutN("sleep + update. fc.values.len == ", fc.values.len);
+    return 0;
 }
-
-
-
-
-
-struct monster {
-    task_mgr tm;
-    awaitable update() {
-        while( true ) {
-            co_await yield{};
-        }
-    }
-};
-struct player {
-    std::weak_ptr<monster> target;
-};
-int main() {
-    auto m = std::make_shared<monster>();
-    m->tm.co_spawn( m->update() );
-    auto p = std::make_shared<player>();
-    p->target = m;
-    // ...
-    m.reset();
-    if (auto m = p->target.lock()) {
-        // ...
-    }
-}
-*/

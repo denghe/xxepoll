@@ -1,40 +1,47 @@
-﻿// shared version ( server )
-
+﻿// test split & combine package
 #include "main.h"
+struct NetCtx : xx::net::NetCtxBase<NetCtx> {};
 
-struct NetCtx : xx::net::NetCtxBase<NetCtx> {
-    int64_t counter{};
-};
-
+// package define: header len = 1 byte, max = 256
 template<typename Derived>
-struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Base<Derived, 1024> {};
+struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Pkg<Derived, uint8_t, 1, false, 256, 255> {};
 
 struct ServerPeer : PeerBase<ServerPeer> {
-    ~ServerPeer() { xx::CoutN("ServerPeer ~ServerPeer. ip = ", addr); }
+    int OnEventsPkg(xx::Data_r dr) {
+        return Send(dr);   // echo
+    }
+};
 
-    int OnAccept() { xx::CoutN("ServerPeer OnAccept. fd = ", fd," ip = ", addr); return 0; }
-    int OnEventsIn() {
-        ++nc->counter;
-        if (int r = Send(recv.buf, recv.len)) return r; // echo back
-        recv.Clear();
-        return 0;
+struct ClientPeer : PeerBase<ClientPeer> {
+    int OnEventsPkg(xx::Data_r dr) {
+        xx::CoutN("recv dr = ", dr);
+        return 1;   // close
+    }
+    void BeginLogic() { nc->tasks.AddTask(xx::WeakFromThis(this), BeginLogic_()); }
+    xx::Task<> BeginLogic_() {
+        auto d = xx::Data::From({3, 1, 2, 3});
+        for(size_t i = 0; i < d.len; ++i) {
+            Send(&d[i], 1);
+            xx::CoutN("i = ", i);
+            co_yield 0;
+        }
+        xx::CoutN("send finished.");
     }
 };
 
 int main() {
     NetCtx nc;
-    auto fd = nc.Listen<ServerPeer>(12345);
-    xx::CoutN("listener 12345 fd = ", fd);
-    fd = nc.Listen<ServerPeer>(55555);
-    xx::CoutN("listener 55555 fd = ", fd);
-    auto secs = xx::NowSteadyEpochSeconds();
-    double timePool{};
-    while(nc.RunOnce(1)) {
-        if (timePool += xx::NowSteadyEpochSeconds(secs); timePool > 1.) {
-            timePool -= 1;
-            xx::CoutN("counter = ", nc.counter);
-            nc.counter = 0;
-        }
+    nc.Listen<ServerPeer>(12222);
+    nc.tasks.AddTask([](NetCtx& nc)->xx::Task<> {
+        LabBegin:
+        co_yield 0;
+        co_yield 0;
+        auto w = co_await nc.Connect<ClientPeer>(xx::net::ToAddress("127.0.0.1", 12222), 3);
+        if (!w) goto LabBegin;
+        w->BeginLogic();
+    }(nc));
+    while(nc.RunOnce(1) > 1) {
+        std::this_thread::sleep_for(0.5s);
     }
     return 0;
 }
