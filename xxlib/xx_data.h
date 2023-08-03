@@ -779,7 +779,7 @@ namespace xx {
         }
     };
 
-    // 适配 Span / Data_r ( for buf combine )
+    // 适配 Span / Data_r ( for buf combine, does not write len )
     template<typename T>
     struct DataFuncs<T, std::enable_if_t<std::is_base_of_v<Span, T> && !std::is_base_of_v<Data, T>>> {
         template<bool needReserve = true>
@@ -788,14 +788,6 @@ namespace xx {
         }
     };
 
-    // 适配 Span ( do not write len )
-    template<typename T>
-    struct DataFuncs<T, std::enable_if_t<std::is_same_v<Span, std::decay_t<T>>>> {
-        template<bool needReserve = true>
-        static inline void Write(Data& d, T const& in) {
-            d.WriteBuf<needReserve>(in.buf, in.len);
-        }
-    };
 
     // 适配 1 字节长度的 数值( 含 double ) 或 float/double( 这些类型直接 memcpy )
     template<typename T>
