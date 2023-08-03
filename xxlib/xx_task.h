@@ -9,11 +9,11 @@
 
 namespace xx {
     struct YieldType {
-        ssize_t v;
+        ptrdiff_t v;
         void* p;
         YieldType() : v(0), p(nullptr) {}
-        YieldType(ssize_t v) : v(v), p(nullptr) {}
-        YieldType(ssize_t v, void* p) : v(v), p(p) {}
+        YieldType(ptrdiff_t v) : v(v), p(nullptr) {}
+        YieldType(ptrdiff_t v, void* p) : v(v), p(p) {}
         YieldType(YieldType const&) = default;
         YieldType& operator=(YieldType const&) = default;
     };
@@ -237,7 +237,7 @@ namespace xx {
 
     template<int timeoutSecs = 15>
     struct EventTasks {
-        using Tuple = std::tuple<ssize_t, void*, double, Task<>>;
+        using Tuple = std::tuple<ptrdiff_t, void*, double, Task<>>;
         List<Task<>, int> tasks;
         List<Tuple, int> eventTasks;
 
@@ -259,7 +259,7 @@ namespace xx {
         // void(*Handler)( void* ) = [???](auto p) { *(T*)p = ???; }
         // return 0: miss or success
         template<typename Handler>
-        ssize_t operator()(ssize_t const& v, Handler&& h) {
+        ptrdiff_t operator()(ptrdiff_t const& v, Handler&& h) {
             for (int i = eventTasks.len - 1; i >= 0; --i) {
                 auto& t = eventTasks[i];
                 if (v == std::get<0>(t)) {
@@ -272,7 +272,7 @@ namespace xx {
 
         // handle eventTasks timeout & resume tasks
         // return 0: success
-        ssize_t operator()() {
+        ptrdiff_t operator()() {
             if (!eventTasks.Empty()) {
                 auto now = NowSteadyEpochSeconds();
                 for (int i = eventTasks.len - 1; i >= 0; --i) {
@@ -305,7 +305,7 @@ namespace xx {
         }
 
     protected:
-        XX_FORCE_INLINE ssize_t Resume(int i, Tuple& tuple) {
+        XX_FORCE_INLINE ptrdiff_t Resume(int i, Tuple& tuple) {
             auto& task = std::get<3>(tuple);
             if (task.Resume()) {
                 eventTasks.SwapRemoveAt(i);  // done
