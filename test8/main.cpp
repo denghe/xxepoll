@@ -14,32 +14,33 @@ struct ServerPeer : PeerBase<ServerPeer> {
 
 struct ClientPeer : PeerBase<ClientPeer> {
     int OnEventsPkg(xx::Data_r dr) {
-        xx::CoutN("recv dr = ", dr);
+        xx::CoutTN("recv dr = ", dr);
         return 1;   // close
     }
-    void BeginLogic() { nc->tasks.AddTask(xx::WeakFromThis(this), BeginLogic_()); }
-    xx::Task<> BeginLogic_() {
+    xx::Task<> Go() {
         auto d = xx::Data::From({3, 1, 2, 3});
         for(size_t i = 0; i < d.len; ++i) {
             Send(&d[i], 1);
-            xx::CoutN("i = ", i);
+            xx::CoutTN("i = ", i);
             co_yield 0;
         }
-        xx::CoutN("send finished.");
+        xx::CoutTN("send finished.");
     }
 };
 
 int main() {
     NetCtx nc;
     nc.Listen<ServerPeer>(12222);
-    nc.tasks.AddTask([](NetCtx& nc)->xx::Task<> {
-        LabBegin:
-        co_yield 0;
-        co_yield 0;
-        auto w = co_await nc.Connect<ClientPeer>(xx::net::ToAddress("127.0.0.1", 12222), 3);
-        if (!w) goto LabBegin;
-        w->BeginLogic();
-    }(nc));
+    nc.tasks.Add([&]()->xx::Task<> {
+        auto a = xx::net::ToAddress("127.0.0.1", 12222);
+        while (true) {
+            co_yield 0;
+            if (auto w = co_await nc.Connect<ClientPeer>(a, 3)) {
+                nc.tasks.AddTask(w, w->Go());
+                break;
+            }
+        }
+    });
     while(nc.RunOnce(1) > 1) {
         std::this_thread::sleep_for(0.5s);
     }
