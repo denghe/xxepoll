@@ -6,10 +6,6 @@ using Package = xx::net::PackageBase<uint32_t, int32_t, sizeof(uint32_t), false,
 
 struct NetCtx : xx::net::NetCtxBase<NetCtx> {};
 struct ServerPeer : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_SendRequest<ServerPeer, Package> {
-    int OnAccept() {
-        xx::CoutN("fd = ", fd, " OnAccept ip = ", addr);
-        return 0;
-    }
     int HandleRequest(Package& pkg) {
         return SendResponse(pkg.serial, pkg.data);  // echo back
     }

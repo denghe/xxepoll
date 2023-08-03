@@ -10,9 +10,15 @@ template<typename Derived>
 struct PeerBase : xx::net::TcpSocket<NetCtx>, xx::net::PartialCodes_OnEvents_Base<Derived, 1024> {};
 
 struct ServerPeer : PeerBase<ServerPeer> {
-    ~ServerPeer() { xx::CoutN("ServerPeer ~ServerPeer. ip = ", addr); }
+    ~ServerPeer() {
+        xx::CoutN("ServerPeer ~ServerPeer. ip = ", addr);
+    }
 
-    int OnAccept() { xx::CoutN("ServerPeer OnAccept. fd = ", fd," ip = ", addr); return 0; }
+    int OnAccept() {
+        xx::CoutN("ServerPeer OnAccept. fd = ", fd," ip = ", addr);
+        return 0;
+    }
+
     int OnEventsIn() {
         ++nc->counter;
         if (int r = Send(recv.buf, recv.len)) return r; // echo back
