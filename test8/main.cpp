@@ -36,7 +36,7 @@ int main() {
         while (true) {
             co_yield 0;
             if (auto w = co_await nc.Connect<ClientPeer>(a, 3)) {
-                nc.tasks.Add(w, w->Go());
+                nc.weakTasks.Add(w, w->Go());
                 break;
             }
         }
