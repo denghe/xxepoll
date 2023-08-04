@@ -23,7 +23,7 @@ int main() {
                 co_yield 0;
             }
         }); // always resume
-        wt.AddTask(foo, foo->Update()); // if (weak foo) resume
+        wt.Add(foo, foo->Update()); // if (weak foo) resume
         wt();
         wt();
         foo.Reset();    // kill foo immediately

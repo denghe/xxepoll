@@ -14,7 +14,7 @@ int main() {
         co_return;
     };
     xx::EventTasks<> tasks;
-    tasks.AddTask(f());
+    tasks.Add(f());
     int i = 1;
     for (; i <= 5; ++i) {
         std::cout << "step: " << i << std::endl;

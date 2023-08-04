@@ -14,7 +14,7 @@ struct ClientPeer : PeerBase, xx::net::PartialCodes_SendRequest<ClientPeer, Pack
         nc->taskPeers.Add(xx::WeakFromThis(this));
         return 0;
     }
-    void Go() { tasks.AddTask(Go_()); }
+    void Go() { tasks.Add(Go_()); }
     xx::Task<> Go_() {
         auto dr = co_await SendRequest([](xx::Data &d) {
             d.Write("hello");
