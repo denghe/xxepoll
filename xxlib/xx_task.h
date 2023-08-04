@@ -150,7 +150,7 @@ namespace xx {
         // T: Task<> or callable
         template<typename T>
         IndexAndVersion Add(T &&t) {
-            if constexpr (std::is_base_of_v<Task<>, T>) {
+            if constexpr (std::is_convertible_v<Task<>, T>) {
                 if (t) return {};
                 tasks.Emplace(std::forward<T>(t));
                 return tasks.Tail();
